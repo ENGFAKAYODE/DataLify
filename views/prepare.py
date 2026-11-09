@@ -1,0 +1,1619 @@
+
+import json
+from datetime import datetime
+
+import pandas as pd
+import streamlit as st
+
+
+# =========================================================
+# DESIGN SYSTEM
+# =========================================================
+
+def prepare_styles():
+    st.markdown(
+        """
+        <style>
+        /* Main page */
+        .prep-hero {
+            padding: 8px 0 20px 0;
+        }
+
+        .prep-eyebrow {
+            color: #168B77;
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .prep-title {
+            font-size: 2rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+            line-height: 1.15;
+            margin-bottom: 8px;
+            color: #17243B;
+        }
+
+        .prep-description {
+            color: #64748B;
+            font-size: 0.94rem;
+            line-height: 1.6;
+            max-width: 760px;
+        }
+
+        /* Summary cards */
+        .prep-card {
+            background: #FFFFFF;
+            border: 1px solid #E3EAF4;
+            border-radius: 16px;
+            padding: 19px 20px;
+            min-height: 122px;
+            box-shadow: 0 8px 28px rgba(20, 41, 78, 0.045);
+        }
+
+        .prep-card-label {
+            font-size: 0.76rem;
+            font-weight: 650;
+            color: #718096;
+            margin-bottom: 12px;
+        }
+
+        .prep-card-value {
+            font-size: 2rem;
+            line-height: 1;
+            font-weight: 800;
+            letter-spacing: -1px;
+            color: #17243B;
+        }
+
+        .prep-card-detail {
+            font-size: 0.75rem;
+            color: #718096;
+            margin-top: 9px;
+        }
+
+        .prep-green-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-top: 9px;
+            padding: 5px 9px;
+            border-radius: 7px;
+            background: #E5F7F2;
+            color: #127A68;
+            font-size: 0.73rem;
+            font-weight: 750;
+        }
+
+        /* Working copy status */
+        .prep-status {
+            padding: 13px 15px;
+            margin: 12px 0 17px 0;
+            border: 1px solid #E3EAF4;
+            border-radius: 12px;
+            background: #FFFFFF;
+            font-size: 0.81rem;
+            color: #52617A;
+        }
+
+        /* Section headings */
+        .prep-section-heading {
+            font-size: 1.02rem;
+            font-weight: 750;
+            letter-spacing: -0.2px;
+            margin-bottom: 4px;
+        }
+
+        .prep-section-caption {
+            color: #718096;
+            font-size: 0.78rem;
+            margin-bottom: 14px;
+        }
+
+        .prep-subheading {
+            font-size: 0.9rem;
+            font-weight: 750;
+            margin-bottom: 5px;
+        }
+
+        .prep-divider {
+            height: 1px;
+            background: #E3EAF4;
+            margin: 22px 0;
+        }
+
+        /* Task button area */
+        .prep-task-caption {
+            font-size: 0.78rem;
+            color: var(--text-color);
+            opacity: 0.62;
+            margin-bottom: 10px;
+        }
+
+        /* This page injects its own styles after the app theme; keep blue actions legible. */
+        [data-testid="stFormSubmitButton"] button[kind*="primary"],
+        [data-testid="stFormSubmitButton"] button[data-testid*="BaseButton-primary"],
+        [data-testid="stFormSubmitButton"] [data-testid*="BaseButton-primary"] {
+            color: #FFFFFF !important;
+            -webkit-text-fill-color: #FFFFFF !important;
+        }
+        [data-testid="stFormSubmitButton"] button[kind*="primary"] *,
+        [data-testid="stFormSubmitButton"] button[data-testid*="BaseButton-primary"] *,
+        [data-testid="stFormSubmitButton"] [data-testid*="BaseButton-primary"] * {
+            color: #FFFFFF !important;
+            -webkit-text-fill-color: #FFFFFF !important;
+            fill: #FFFFFF !important;
+        }
+
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =========================================================
+# DATA HELPERS
+# =========================================================
+
+def quality_metrics(df):
+    rows, columns = df.shape
+    total_cells = rows * columns
+
+    missing = int(df.isna().sum().sum())
+    duplicates = int(df.duplicated().sum())
+
+    completeness = (
+        (total_cells - missing) / total_cells * 100
+        if total_cells else 100.0
+    )
+
+    return {
+        "Rows": rows,
+        "Columns": columns,
+        "Missing cells": missing,
+        "Duplicate rows": duplicates,
+        "Completeness %": round(completeness, 2),
+    }
+
+
+def get_numeric_columns(df):
+    return df.select_dtypes(include="number").columns.tolist()
+
+
+def initialize_prepare_state():
+    defaults = {
+        "prepare_history": [],
+        "prepare_recipe": [],
+        "prepare_updated_at": None,
+        "wrangle_active_task": "Filter rows",
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def record_transformation(new_df, description):
+    """Save the previous dataset and record one transformation."""
+
+    st.session_state.prepare_history.append(
+        st.session_state.working_df.copy(deep=True)
+    )
+
+    st.session_state.working_df = new_df.copy(deep=True)
+
+    st.session_state.prepare_recipe.append({
+        "description": description,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    })
+
+    st.session_state.prepare_updated_at = datetime.now().strftime(
+        "%Y-%m-%d %H:%M"
+    )
+
+
+# =========================================================
+# SUMMARY COMPONENTS
+# =========================================================
+
+def render_summary(original_df, working_df):
+    recipe = st.session_state.prepare_recipe
+    history = st.session_state.prepare_history
+
+    quality = quality_metrics(working_df)
+
+    st.markdown("### Dataset summary")
+
+    st.caption(f"Working copy: {len(working_df):,} rows, {len(working_df.columns):,} fields")
+
+    transform_col, quality_col, action_col = st.columns(
+        [1.05, 1.05, 1.4],
+        gap="medium",
+    )
+
+    with transform_col:
+        st.markdown(
+            f"""
+            <div class="prep-card">
+                <div class="prep-card-label">TRANSFORMATIONS</div>
+                <div class="prep-card-value">{len(recipe):,}</div>
+                <div class="prep-green-indicator">
+                    ↑ {len(recipe)} applied
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with quality_col:
+        st.markdown(
+            f"""
+            <div class="prep-card">
+                <div class="prep-card-label">COMPLETENESS</div>
+                <div class="prep-card-value">
+                    {quality["Completeness %"]:.1f}%
+                </div>
+                <div class="prep-card-detail">
+                    Complete cells
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with action_col:
+        st.markdown("<div style='height:5px'></div>", unsafe_allow_html=True)
+
+        undo_col, reset_col = st.columns(2)
+
+        with undo_col:
+            if st.button(
+                "↶ Undo",
+                disabled=not history,
+                width="stretch",
+                key="prepare_undo",
+            ):
+                st.session_state.working_df = (
+                    st.session_state.prepare_history.pop()
+                )
+
+                if st.session_state.prepare_recipe:
+                    st.session_state.prepare_recipe.pop()
+
+                st.session_state.prepare_updated_at = (
+                    datetime.now().strftime("%Y-%m-%d %H:%M")
+                )
+                st.rerun()
+
+        with reset_col:
+            if st.button(
+                "Reset all",
+                disabled=not recipe,
+                width="stretch",
+                key="prepare_reset",
+            ):
+                st.session_state.working_df = (
+                    original_df.copy(deep=True)
+                )
+                st.session_state.prepare_history = []
+                st.session_state.prepare_recipe = []
+                st.session_state.prepare_updated_at = (
+                    datetime.now().strftime("%Y-%m-%d %H:%M")
+                )
+                st.rerun()
+
+        recipe_data = {
+            "dataset": st.session_state.get(
+                "dataset_name", "dataset"
+            ),
+            "transformations": recipe,
+            "business_kpis": st.session_state.get("business_kpis", []),
+            "exported_at": datetime.now().isoformat(),
+        }
+
+        st.download_button(
+            "↓ Export recipe",
+            data=json.dumps(recipe_data, indent=4),
+            file_name="datalify_transformation_recipe.json",
+            mime="application/json",
+            width="stretch",
+            key="prepare_export",
+        )
+
+    updated_at = st.session_state.prepare_updated_at or "None"
+
+    st.markdown(
+        f"""
+        <div class="prep-status">
+            Last updated {updated_at}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("Before-and-after quality validation"):
+        before = quality_metrics(original_df)
+        after = quality_metrics(working_df)
+
+        rows = []
+
+        for metric in before:
+            old = before[metric]
+            new = after[metric]
+            change = new - old
+
+            if metric == "Completeness %":
+                old_display = f"{old:.2f}%"
+                new_display = f"{new:.2f}%"
+                change_display = f"{change:+.2f}%"
+            else:
+                old_display = f"{old:,}"
+                new_display = f"{new:,}"
+                change_display = f"{change:+,}"
+
+            rows.append({
+                "Metric": metric,
+                "Before": old_display,
+                "After": new_display,
+                "Change": change_display,
+            })
+
+        st.dataframe(
+            pd.DataFrame(rows),
+            width="stretch",
+            hide_index=True,
+        )
+
+
+# =========================================================
+# CLEAN: MISSING VALUES
+# =========================================================
+
+def render_missing_values(df):
+    st.markdown(
+        '<div class="prep-subheading">Missing Values</div>',
+        unsafe_allow_html=True,
+    )
+
+    missing_counts = df.isna().sum()
+    missing_counts = missing_counts[missing_counts > 0]
+
+    if missing_counts.empty:
+        st.success("No missing values detected.")
+        return
+
+    st.metric(
+        "Missing cells",
+        f"{int(missing_counts.sum()):,}",
+    )
+
+    missing_table = (
+        missing_counts.rename("Missing values")
+        .reset_index()
+        .rename(columns={"index": "Field"})
+        .sort_values("Missing values", ascending=False)
+    )
+
+    st.dataframe(
+        missing_table,
+        width="stretch",
+        hide_index=True,
+        height=150,
+    )
+
+    with st.form("missing_values_form"):
+        st.markdown("**Fields to clean**")
+
+        selected_fields = st.multiselect(
+            " ",
+            options=missing_counts.index.tolist(),
+            default=missing_counts.index.tolist(),
+            key="clean_missing_fields",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("**Treatment**")
+
+        strategy = st.selectbox(
+            " ",
+            [
+                "Fill with a constant",
+                "Fill with mean",
+                "Fill with median",
+                "Fill with mode",
+                "Remove rows with missing values",
+            ],
+            key="clean_missing_strategy",
+            label_visibility="collapsed",
+        )
+
+        constant_value = None
+
+        if strategy == "Fill with a constant":
+            constant_value = st.text_input(
+                "Replacement value",
+                value="Unknown",
+            )
+
+        submitted = st.form_submit_button(
+            "Apply treatment",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        if not selected_fields:
+            st.warning("Select at least one field.")
+            return
+
+        result = df.copy(deep=True)
+
+        try:
+            if strategy == "Remove rows with missing values":
+                result = result.dropna(subset=selected_fields)
+
+            else:
+                for column in selected_fields:
+                    series = result[column]
+
+                    if strategy == "Fill with mean":
+                        if not pd.api.types.is_numeric_dtype(series):
+                            continue
+                        value = series.mean()
+
+                    elif strategy == "Fill with median":
+                        if not pd.api.types.is_numeric_dtype(series):
+                            continue
+                        value = series.median()
+
+                    elif strategy == "Fill with mode":
+                        modes = series.mode(dropna=True)
+                        value = modes.iloc[0] if not modes.empty else None
+
+                    else:
+                        value = constant_value
+
+                    if value is not None and not pd.isna(value):
+                        result[column] = series.fillna(value)
+
+            if result.equals(df):
+                st.info("No changes were necessary.")
+            else:
+                record_transformation(
+                    result,
+                    f"{strategy} on {', '.join(selected_fields)}",
+                )
+                st.success("Missing-value treatment applied.")
+                st.rerun()
+
+        except Exception as error:
+            st.error(f"Could not apply treatment: {error}")
+
+
+# =========================================================
+# CLEAN: DUPLICATE RECORDS
+# =========================================================
+
+def render_duplicates(df):
+    st.markdown(
+        '<div class="prep-subheading">Duplicate Records</div>',
+        unsafe_allow_html=True,
+    )
+
+    duplicate_count = int(df.duplicated().sum())
+
+    st.metric(
+        "Exact duplicate rows detected",
+        f"{duplicate_count:,}",
+    )
+
+    if duplicate_count == 0:
+        st.success("No exact duplicate rows detected.")
+        return
+
+    with st.form("duplicate_records_form"):
+        st.markdown("**Fields that define a duplicate**")
+
+        duplicate_fields = st.multiselect(
+            " ",
+            options=df.columns.tolist(),
+            default=df.columns.tolist(),
+            key="duplicate_fields",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("**Record to keep**")
+
+        keep_record = st.selectbox(
+            " ",
+            ["First", "Last"],
+            key="duplicate_keep",
+            label_visibility="collapsed",
+        )
+
+        submitted = st.form_submit_button(
+            "Remove duplicates",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        if not duplicate_fields:
+            st.warning("Choose at least one field.")
+            return
+
+        keep_value = "first" if keep_record == "First" else "last"
+
+        result = df.drop_duplicates(
+            subset=duplicate_fields,
+            keep=keep_value,
+        ).reset_index(drop=True)
+
+        removed = len(df) - len(result)
+
+        if removed:
+            record_transformation(
+                result,
+                f"Remove {removed} duplicate records using "
+                f"{', '.join(duplicate_fields)}; keep {keep_record}",
+            )
+            st.success(f"Removed {removed:,} duplicate records.")
+            st.rerun()
+        else:
+            st.info("No duplicates found using those fields.")
+
+
+# =========================================================
+# CLEAN: FIELD TYPES
+# =========================================================
+
+def _parse_number_with_unit(series):
+    """Parse numeric values followed by optional unit text, such as ``16 yrs``."""
+    text = series.astype("string").str.strip()
+    number_pattern = r"^([+-]?(?:\d[\d,]*\.?\d*|\.\d+))\s*[^\d.+-]*$"
+    extracted = text.str.extract(number_pattern, expand=False)
+    invalid = text.notna() & extracted.isna()
+    if invalid.any():
+        examples = ", ".join(repr(value) for value in text[invalid].head(3).tolist())
+        raise ValueError(f"Could not find a leading number in: {examples}")
+    # Keep genuinely missing values missing; non-missing unparseable strings
+    # remain invalid so the caller can show a conversion error.
+    extracted = extracted.where(text.notna(), pd.NA)
+    extracted = extracted.str.replace(",", "", regex=False)
+    return pd.to_numeric(extracted, errors="raise")
+
+def render_field_types(df):
+    st.markdown(
+        '<div class="prep-subheading">Convert a Field Type</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.form("field_type_form"):
+        field = st.selectbox(
+            "Field",
+            df.columns.tolist(),
+            key="type_field",
+        )
+
+        target_type = st.selectbox(
+            "Convert to",
+            ["Text", "Integer", "Decimal", "Currency", "Date", "Boolean"],
+            key="type_target",
+        )
+
+        currency_code = None
+        if target_type == "Currency":
+            currency_code = st.text_input(
+                "Currency code or symbol",
+                value="USD",
+                placeholder="For example USD, EUR, GBP, or NGN",
+                help="Currency values are stored as numeric amounts; the chosen currency is recorded in the transformation history.",
+                key="type_currency_code",
+            )
+
+        submitted = st.form_submit_button(
+            "Apply field type",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        result = df.copy(deep=True)
+
+        try:
+            if target_type == "Text":
+                result[field] = result[field].astype("string")
+
+            elif target_type == "Integer":
+                result[field] = _parse_number_with_unit(result[field]).astype("Int64")
+
+            elif target_type == "Decimal":
+                result[field] = _parse_number_with_unit(result[field])
+
+            elif target_type == "Currency":
+                if not currency_code or not currency_code.strip():
+                    st.error("Enter the currency code or symbol for this field.")
+                    return
+
+                raw_values = result[field].astype("string").str.strip()
+                is_parenthesized_negative = raw_values.str.match(r"^\(.*\)$", na=False)
+                amounts = raw_values.str.replace(r"[^0-9.+-]", "", regex=True)
+                amounts = amounts.mask(is_parenthesized_negative, "-" + amounts)
+                amounts = amounts.replace("", pd.NA)
+                result[field] = pd.to_numeric(amounts, errors="raise")
+
+            elif target_type == "Date":
+                result[field] = pd.to_datetime(
+                    result[field], errors="raise"
+                )
+
+            elif target_type == "Boolean":
+                mapping = {
+                    "true": True,
+                    "false": False,
+                    "1": True,
+                    "0": False,
+                    "yes": True,
+                    "no": False,
+                }
+
+                result[field] = result[field].map(
+                    lambda value: (
+                        mapping.get(str(value).strip().lower())
+                        if pd.notna(value) else None
+                    )
+                ).astype("boolean")
+
+            if result.equals(df):
+                st.info("The field already has this type.")
+            else:
+                record_transformation(
+                    result,
+                    f"Convert {field} to {target_type}"
+                    + (f" ({currency_code.strip()})" if target_type == "Currency" else ""),
+                )
+                currency_suffix = f" ({currency_code.strip()})" if target_type == "Currency" else ""
+                st.success(f"{field} converted to {target_type}{currency_suffix}.")
+                st.rerun()
+
+        except Exception as error:
+            st.error(f"Conversion failed: {error}")
+
+
+# =========================================================
+# CLEAN: OUTLIERS
+# =========================================================
+
+def render_outliers(df):
+    st.markdown(
+        '<div class="prep-subheading">Treat Potential Outliers</div>',
+        unsafe_allow_html=True,
+    )
+
+    numeric_columns = get_numeric_columns(df)
+
+    if not numeric_columns:
+        st.info("No numeric fields are available.")
+        return
+
+    with st.form("outlier_form"):
+        field = st.selectbox(
+            "Numeric field",
+            numeric_columns,
+            key="outlier_field",
+        )
+
+        treatment = st.selectbox(
+            "Treatment",
+            [
+                "Cap values (winsorize)",
+                "Remove rows outside IQR bounds",
+            ],
+            key="outlier_treatment",
+        )
+
+        sensitivity = st.slider(
+            "IQR sensitivity",
+            min_value=1.0,
+            max_value=3.0,
+            value=1.5,
+            step=0.1,
+            key="outlier_sensitivity",
+        )
+
+        submitted = st.form_submit_button(
+            "Apply outlier treatment",
+            type="primary",
+            width="stretch",
+        )
+
+    series = pd.to_numeric(
+        df[field], errors="coerce"
+    ).dropna()
+
+    if series.empty:
+        st.info("No usable numeric values in this field.")
+        return
+
+    q1 = series.quantile(0.25)
+    q3 = series.quantile(0.75)
+    iqr = q3 - q1
+
+    lower_bound = q1 - sensitivity * iqr
+    upper_bound = q3 + sensitivity * iqr
+
+    outlier_count = int(
+        ((series < lower_bound) | (series > upper_bound)).sum()
+    )
+
+    st.caption(
+        f"{outlier_count:,} potential outliers detected · "
+        f"Lower: {lower_bound:,.2f} · Upper: {upper_bound:,.2f}"
+    )
+
+    if submitted:
+        result = df.copy(deep=True)
+
+        if treatment == "Cap values (winsorize)":
+            result[field] = result[field].clip(
+                lower=lower_bound,
+                upper=upper_bound,
+            )
+        else:
+            numeric_values = pd.to_numeric(
+                result[field], errors="coerce"
+            )
+
+            keep_mask = (
+                numeric_values.between(lower_bound, upper_bound)
+                | numeric_values.isna()
+            )
+
+            result = result.loc[keep_mask].reset_index(drop=True)
+
+        if result.equals(df):
+            st.info("No changes were necessary.")
+        else:
+            record_transformation(
+                result,
+                f"{treatment} on {field}; IQR sensitivity {sensitivity}",
+            )
+            st.success("Outlier treatment applied.")
+            st.rerun()
+
+
+# =========================================================
+# CLEAN TAB
+# =========================================================
+
+def _clean_quality_metrics(data):
+    rows = len(data)
+    total_cells = rows * len(data.columns)
+    missing = int(data.isna().sum().sum())
+    duplicates = int(data.duplicated().sum())
+    missing_percent = missing / total_cells * 100 if total_cells else 0
+    duplicate_percent = duplicates / rows * 100 if rows else 0
+    score = max(0, 100 - missing_percent * 0.7 - duplicate_percent * 0.3)
+    return {
+        "Rows": rows,
+        "Missing values": missing,
+        "Duplicate rows": duplicates,
+        "Quality score": round(score, 2),
+    }
+
+
+def _build_quick_clean_preview(data, remove_duplicates, trim_whitespace, fill_missing, fill_strategy):
+    result = data.copy(deep=True)
+    if trim_whitespace:
+        text_columns = result.select_dtypes(include=["object", "string"]).columns
+        for column in text_columns:
+            result[column] = result[column].map(
+                lambda value: value.strip() if isinstance(value, str) else value
+            )
+    if fill_missing:
+        for column in result.columns:
+            series = result[column]
+            if not series.isna().any():
+                continue
+            if fill_strategy == "Median" and pd.api.types.is_numeric_dtype(series):
+                value = series.median()
+            else:
+                modes = series.mode(dropna=True)
+                value = modes.iloc[0] if not modes.empty else None
+            if value is not None and not pd.isna(value):
+                result[column] = series.fillna(value)
+    if remove_duplicates:
+        result = result.drop_duplicates()
+    return result.reset_index(drop=True)
+
+
+def render_clean_tab(df):
+    st.markdown("### Clean your dataset")
+    st.caption("Preview a quick cleanup, then apply it, or use targeted tools for individual fields.")
+
+    st.markdown("#### Quick cleanup preview")
+    remove_duplicates = st.checkbox("Remove duplicate rows", value=True, key="clean_preview_duplicates")
+    trim_whitespace = st.checkbox("Trim leading and trailing text whitespace", value=True, key="clean_preview_whitespace")
+    fill_missing = st.checkbox("Fill missing values", value=False, key="clean_preview_missing")
+    fill_strategy = st.selectbox(
+        "Missing-value strategy", ["Median", "Mode"],
+        help="Median fills numeric columns. Mode fills columns with their most frequent value. Columns without a suitable value are left unchanged.",
+        key="clean_preview_fill_strategy",
+    )
+
+    current_df = st.session_state.working_df.copy(deep=True)
+    preview_df = _build_quick_clean_preview(
+        current_df, remove_duplicates, trim_whitespace, fill_missing, fill_strategy
+    )
+    before_metrics = _clean_quality_metrics(current_df)
+    after_metrics = _clean_quality_metrics(preview_df)
+    impact_table = pd.DataFrame({
+        "Metric": ["Rows", "Missing values", "Duplicate rows", "Quality score"],
+        "Before": [f"{before_metrics['Rows']:,}", f"{before_metrics['Missing values']:,}", f"{before_metrics['Duplicate rows']:,}", f"{before_metrics['Quality score']:.2f}%"],
+        "After": [f"{after_metrics['Rows']:,}", f"{after_metrics['Missing values']:,}", f"{after_metrics['Duplicate rows']:,}", f"{after_metrics['Quality score']:.2f}%"],
+    })
+    st.dataframe(impact_table, width="stretch", hide_index=True)
+    apply_col, reset_col = st.columns(2)
+    with apply_col:
+        if st.button("Apply cleanup", type="primary", width="stretch", key="apply_quality_cleanup"):
+            if preview_df.equals(current_df):
+                st.info("No cleanup changes to apply.")
+            else:
+                record_transformation(preview_df, "Apply quick cleanup")
+                st.success("Cleanup applied to the working dataset.")
+                st.rerun()
+    with reset_col:
+        if st.button("Reset to original upload", width="stretch", key="reset_quality_cleanup"):
+            original_df = st.session_state.get("original_df")
+            if original_df is None:
+                st.warning("The original upload is unavailable. Upload the dataset again to reset.")
+            elif original_df.equals(current_df):
+                st.info("The working dataset already matches the original upload.")
+            else:
+                record_transformation(original_df, "Reset dataset to original upload")
+                st.success("Restored the original uploaded dataset.")
+                st.rerun()
+    with st.expander("Preview the first 20 rows after cleanup"):
+        st.dataframe(preview_df.head(20), width="stretch", hide_index=True)
+
+    st.divider()
+    st.markdown("#### Targeted cleaning tools")
+    missing_col, duplicate_col = st.columns(
+        2,
+        gap="large",
+    )
+
+    with missing_col:
+        render_missing_values(df)
+
+    with duplicate_col:
+        render_duplicates(df)
+
+    st.markdown('<div class="prep-divider"></div>', unsafe_allow_html=True)
+
+    type_col, outlier_col = st.columns(
+        2,
+        gap="large",
+    )
+
+    with type_col:
+        render_field_types(df)
+
+    with outlier_col:
+        render_outliers(df)
+
+
+# =========================================================
+# WRANGLE: FILTER ROWS
+# =========================================================
+
+def render_filter_rows(df):
+    st.markdown("#### Filter rows")
+    st.caption("Keep only records that match your selected condition.")
+
+    with st.form("filter_rows_form"):
+        field = st.selectbox(
+            "Field",
+            df.columns.tolist(),
+            key="filter_field",
+        )
+
+        condition = st.selectbox(
+            "Condition",
+            [
+                "Equals",
+                "Does not equal",
+                "Contains",
+                "Does not contain",
+                "Greater than",
+                "Greater than or equal to",
+                "Less than",
+                "Less than or equal to",
+                "Is missing",
+                "Is not missing",
+            ],
+            key="filter_condition",
+        )
+
+        value = st.text_input(
+            "Value",
+            key="filter_value",
+            disabled=condition in ["Is missing", "Is not missing"],
+        )
+
+        submitted = st.form_submit_button(
+            "Keep matching rows",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        series = df[field]
+
+        try:
+            if condition == "Is missing":
+                mask = series.isna()
+
+            elif condition == "Is not missing":
+                mask = series.notna()
+
+            elif condition in [
+                "Greater than",
+                "Greater than or equal to",
+                "Less than",
+                "Less than or equal to",
+            ]:
+                numeric_series = pd.to_numeric(
+                    series, errors="coerce"
+                )
+                numeric_value = float(value)
+
+                if condition == "Greater than":
+                    mask = numeric_series > numeric_value
+                elif condition == "Greater than or equal to":
+                    mask = numeric_series >= numeric_value
+                elif condition == "Less than":
+                    mask = numeric_series < numeric_value
+                else:
+                    mask = numeric_series <= numeric_value
+
+            elif condition == "Equals":
+                mask = series.astype(str) == value
+
+            elif condition == "Does not equal":
+                mask = series.astype(str) != value
+
+            elif condition == "Contains":
+                mask = series.astype(str).str.contains(
+                    value, case=False, na=False
+                )
+
+            else:
+                mask = ~series.astype(str).str.contains(
+                    value, case=False, na=False
+                )
+
+            result = df.loc[mask].reset_index(drop=True)
+
+            if result.equals(df):
+                st.info("The filter did not change the dataset.")
+            elif result.empty:
+                st.warning(
+                    "No records match this condition. "
+                    "Your working dataset was not changed."
+                )
+            else:
+                removed = len(df) - len(result)
+
+                record_transformation(
+                    result,
+                    f"Filter rows: {field} {condition.lower()} {value}",
+                )
+
+                st.success(
+                    f"Kept {len(result):,} records and excluded {removed:,}."
+                )
+                st.rerun()
+
+        except Exception as error:
+            st.error(f"Could not apply filter: {error}")
+
+
+# =========================================================
+# WRANGLE: CALCULATED FIELD
+# =========================================================
+
+def render_calculated_field(df):
+    st.markdown("#### Calculated field")
+    st.caption("Create a new field using two existing numeric fields.")
+
+    numeric_columns = get_numeric_columns(df)
+
+    if not numeric_columns:
+        st.info("No numeric fields are available.")
+        return
+
+    with st.form("calculated_field_form"):
+        new_name = st.text_input(
+            "New field name",
+            placeholder="e.g. Total Amount",
+        )
+
+        calculation = st.selectbox(
+            "Calculation",
+            ["Add", "Subtract", "Multiply", "Divide"],
+        )
+
+        first_field = st.selectbox(
+            "First field",
+            numeric_columns,
+            key="calc_first",
+        )
+
+        second_field = st.selectbox(
+            "Second field",
+            numeric_columns,
+            key="calc_second",
+        )
+
+        submitted = st.form_submit_button(
+            "Create calculated field",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        if not new_name.strip():
+            st.warning("Enter a name for the new field.")
+            return
+
+        if new_name in df.columns:
+            st.warning("A field with that name already exists.")
+            return
+
+        result = df.copy(deep=True)
+
+        a = pd.to_numeric(result[first_field], errors="coerce")
+        b = pd.to_numeric(result[second_field], errors="coerce")
+
+        if calculation == "Add":
+            result[new_name] = a + b
+        elif calculation == "Subtract":
+            result[new_name] = a - b
+        elif calculation == "Multiply":
+            result[new_name] = a * b
+        else:
+            result[new_name] = a.div(b.replace(0, pd.NA))
+
+        record_transformation(
+            result,
+            f"Create {new_name}: {first_field} {calculation} {second_field}",
+        )
+
+        st.success(f"Created {new_name}.")
+        st.rerun()
+
+
+# =========================================================
+# WRANGLE: GROUP & SUMMARIZE
+# =========================================================
+
+def render_group_summarize(df):
+    st.markdown("#### Group & summarize")
+
+    numeric_columns = get_numeric_columns(df)
+
+    if not numeric_columns:
+        st.info("No numeric fields are available.")
+        return
+
+    with st.form("group_summarize_form"):
+        group_fields = st.multiselect(
+            "Group by fields",
+            df.columns.tolist(),
+        )
+
+        value_field = st.selectbox(
+            "Numeric field to summarize",
+            numeric_columns,
+        )
+
+        aggregation = st.selectbox(
+            "Summary calculation",
+            ["Sum", "Mean", "Median", "Count", "Minimum", "Maximum"],
+        )
+
+        submitted = st.form_submit_button(
+            "Create summary",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        if not group_fields:
+            st.warning("Select at least one grouping field.")
+            return
+
+        functions = {
+            "Sum": "sum",
+            "Mean": "mean",
+            "Median": "median",
+            "Count": "count",
+            "Minimum": "min",
+            "Maximum": "max",
+        }
+
+        result = (
+            df.groupby(group_fields, dropna=False)[value_field]
+            .agg(functions[aggregation])
+            .reset_index()
+        )
+
+        result = result.rename(
+            columns={value_field: f"{aggregation} of {value_field}"}
+        )
+
+        record_transformation(
+            result,
+            f"Group by {', '.join(group_fields)}; "
+            f"{aggregation} of {value_field}",
+        )
+
+        st.success("Grouped summary created.")
+        st.rerun()
+
+
+# =========================================================
+# WRANGLE: PIVOT
+# =========================================================
+
+def render_pivot(df):
+    st.markdown("#### Pivot")
+    numeric_columns = get_numeric_columns(df)
+
+    if not numeric_columns:
+        st.info("A numeric field is required for pivot values.")
+        return
+
+    if len(df.columns) < 2:
+        st.info("At least two fields are required.")
+        return
+
+    with st.form("pivot_form"):
+        index_field = st.selectbox(
+            "Rows (index)",
+            df.columns.tolist(),
+        )
+
+        columns_field = st.selectbox(
+            "Columns",
+            [c for c in df.columns if c != index_field],
+        )
+
+        values_field = st.selectbox(
+            "Values",
+            numeric_columns,
+        )
+
+        aggregation = st.selectbox(
+            "Aggregation",
+            ["Sum", "Mean", "Count"],
+        )
+
+        submitted = st.form_submit_button(
+            "Create pivot table",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        functions = {
+            "Sum": "sum",
+            "Mean": "mean",
+            "Count": "count",
+        }
+
+        try:
+            result = pd.pivot_table(
+                df,
+                index=index_field,
+                columns=columns_field,
+                values=values_field,
+                aggfunc=functions[aggregation],
+            ).reset_index()
+
+            result.columns.name = None
+
+            record_transformation(
+                result,
+                f"Pivot {values_field} by {index_field} and {columns_field}",
+            )
+
+            st.success("Pivot table created.")
+            st.rerun()
+
+        except Exception as error:
+            st.error(f"Could not create pivot table: {error}")
+
+
+# =========================================================
+# WRANGLE: RESHAPE
+# =========================================================
+
+def render_reshape(df):
+    st.markdown("#### Reshape")
+    st.caption("Convert a wide dataset into a long-format dataset.")
+
+    with st.form("reshape_form"):
+        identifier_fields = st.multiselect(
+            "Identifier fields to keep",
+            df.columns.tolist(),
+        )
+
+        submitted = st.form_submit_button(
+            "Reshape dataset",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        if not identifier_fields:
+            st.warning("Select at least one identifier field.")
+            return
+
+        value_fields = [
+            column for column in df.columns
+            if column not in identifier_fields
+        ]
+
+        if not value_fields:
+            st.warning("No fields remain to reshape.")
+            return
+
+        result = pd.melt(
+            df,
+            id_vars=identifier_fields,
+            value_vars=value_fields,
+            var_name="Variable",
+            value_name="Value",
+        )
+
+        record_transformation(
+            result,
+            f"Reshape wide to long; retain {', '.join(identifier_fields)}",
+        )
+
+        st.success("Dataset reshaped.")
+        st.rerun()
+
+
+# =========================================================
+# WRANGLE TAB: TASK BUTTONS
+# =========================================================
+
+def render_wrangle_tab(df):
+    tasks = [
+        "Filter rows",
+        "Calculated field",
+        "Group & summarize",
+        "Pivot",
+        "Reshape",
+    ]
+
+    if (
+        st.session_state.wrangle_active_task not in tasks
+    ):
+        st.session_state.wrangle_active_task = "Filter rows"
+
+    st.markdown(
+        '<div class="prep-section-heading">Wrangling task</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="prep-task-caption">'
+        'Choose an operation to transform your working dataset.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Separate task buttons, visually distinct from the main tabs.
+    task_columns = st.columns(5, gap="small")
+
+    for index, task in enumerate(tasks):
+        with task_columns[index]:
+            active = st.session_state.wrangle_active_task == task
+
+            if st.button(
+                task,
+                key=f"wrangle_task_button_{index}",
+                type="primary" if active else "secondary",
+                width="stretch",
+            ):
+                st.session_state.wrangle_active_task = task
+                st.rerun()
+
+    st.markdown(
+        '<div class="prep-divider"></div>',
+        unsafe_allow_html=True,
+    )
+
+    selected_task = st.session_state.wrangle_active_task
+
+    if selected_task == "Filter rows":
+        render_filter_rows(df)
+
+    elif selected_task == "Calculated field":
+        render_calculated_field(df)
+
+    elif selected_task == "Group & summarize":
+        render_group_summarize(df)
+
+    elif selected_task == "Pivot":
+        render_pivot(df)
+
+    elif selected_task == "Reshape":
+        render_reshape(df)
+
+
+# =========================================================
+# COMBINE: JOIN
+# =========================================================
+
+def read_uploaded_dataset(uploaded_file):
+    if uploaded_file.name.lower().endswith(".csv"):
+        return pd.read_csv(uploaded_file)
+
+    return pd.read_excel(uploaded_file)
+
+
+def render_join(df):
+    st.markdown("#### Join tables")
+    st.caption(
+        "Combine two datasets using matching fields."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload the second dataset",
+        type=["csv", "xlsx", "xls"],
+        key="join_upload",
+    )
+
+    if uploaded_file is None:
+        st.info("Upload another dataset to configure a join.")
+        return
+
+    try:
+        second_df = read_uploaded_dataset(uploaded_file)
+    except Exception as error:
+        st.error(f"Could not read the second dataset: {error}")
+        return
+
+    st.caption(
+        f"Second dataset: {len(second_df):,} rows × "
+        f"{len(second_df.columns):,} fields"
+    )
+
+    with st.form("join_form"):
+        left_key = st.selectbox(
+            "Field in working dataset",
+            df.columns.tolist(),
+        )
+
+        right_key = st.selectbox(
+            "Matching field in second dataset",
+            second_df.columns.tolist(),
+            index=(
+                second_df.columns.tolist().index(left_key)
+                if left_key in second_df.columns else 0
+            ),
+        )
+
+        join_type = st.selectbox(
+            "Join type",
+            ["Left", "Inner", "Right", "Outer"],
+        )
+
+        submitted = st.form_submit_button(
+            "Join datasets",
+            type="primary",
+            width="stretch",
+        )
+
+    if submitted:
+        try:
+            result = pd.merge(
+                df,
+                second_df,
+                left_on=left_key,
+                right_on=right_key,
+                how=join_type.lower(),
+                suffixes=("", "_joined"),
+            )
+
+            record_transformation(
+                result,
+                f"{join_type} join with {uploaded_file.name} "
+                f"using {left_key} = {right_key}",
+            )
+
+            st.success(
+                f"Join completed: {len(result):,} rows × "
+                f"{len(result.columns):,} fields."
+            )
+            st.rerun()
+
+        except Exception as error:
+            st.error(f"Could not join datasets: {error}")
+
+
+# =========================================================
+# COMBINE: UNION
+# =========================================================
+
+def render_union(df):
+    st.markdown("#### Union tables")
+    st.caption(
+        "Append records from another dataset to your working dataset."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload the dataset to append",
+        type=["csv", "xlsx", "xls"],
+        key="union_upload",
+    )
+
+    if uploaded_file is None:
+        st.info("Upload another dataset to append its rows.")
+        return
+
+    try:
+        second_df = read_uploaded_dataset(uploaded_file)
+    except Exception as error:
+        st.error(f"Could not read the second dataset: {error}")
+        return
+
+    shared_fields = [
+        column for column in df.columns
+        if column in second_df.columns
+    ]
+
+    st.metric(
+        "Matching fields",
+        f"{len(shared_fields)} / {len(df.columns)}",
+    )
+
+    include_all_columns = st.checkbox(
+        "Keep fields from both datasets",
+        value=True,
+        key="union_all_columns",
+        help="Retain unmatched fields and fill missing cells where needed.",
+    )
+
+    if st.button(
+        "Union datasets",
+        type="primary",
+        width="stretch",
+        key="union_apply",
+    ):
+        if not shared_fields:
+            st.warning("The datasets have no matching field names.")
+            return
+
+        if include_all_columns:
+            result = pd.concat(
+                [df, second_df],
+                ignore_index=True,
+                sort=False,
+            )
+        else:
+            result = pd.concat(
+                [
+                    df[shared_fields],
+                    second_df[shared_fields],
+                ],
+                ignore_index=True,
+            )
+
+        record_transformation(
+            result,
+            f"Union with {uploaded_file.name}",
+        )
+
+        st.success(
+            f"Union completed: {len(result):,} rows × "
+            f"{len(result.columns):,} fields."
+        )
+        st.rerun()
+
+
+# =========================================================
+# COMBINE DATASETS TAB
+# =========================================================
+
+def render_combine_tab(df):
+    join_col, union_col = st.columns(2, gap="large")
+
+    with join_col:
+        render_join(df)
+
+    with union_col:
+        render_union(df)
+
+
+# =========================================================
+# MAIN PREPARE PAGE
+# =========================================================
+
+def render_prepare():
+
+    if st.session_state.get("working_df") is None:
+        st.info(
+            "No dataset is loaded. Open Data Intake to upload "
+            "a CSV or Excel file."
+        )
+        return
+
+    if st.session_state.get("original_df") is None:
+        st.warning(
+            "The original upload is unavailable. "
+            "Please upload your dataset again."
+        )
+        return
+
+    initialize_prepare_state()
+    prepare_styles()
+
+    original_df = st.session_state.original_df
+    working_df = st.session_state.working_df
+
+    # -----------------------------------------------------
+    # HERO
+    # -----------------------------------------------------
+
+    st.markdown(
+        """
+        <div class="prep-hero">
+            <div class="prep-eyebrow">Data preparation studio</div>
+            <div class="prep-title">Clean, reshape, and combine.</div>
+            <div class="prep-description">
+                Turn raw data into analysis-ready data.
+                Clean inconsistencies, reshape fields, and combine
+                datasets while keeping your original upload untouched.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # -----------------------------------------------------
+    # SUMMARY
+    # -----------------------------------------------------
+
+    render_summary(original_df, working_df)
+
+    st.markdown(
+        '<div class="prep-divider"></div>',
+        unsafe_allow_html=True,
+    )
+
+    # -----------------------------------------------------
+    # MAIN WORKSPACE TABS
+    # -----------------------------------------------------
+
+    clean_tab, wrangle_tab, combine_tab = st.tabs(
+        ["Clean", "Wrangle", "Combine datasets"],
+        key="prepare_workspace_tabs",
+    )
+
+    with clean_tab:
+        render_clean_tab(st.session_state.working_df)
+
+    with wrangle_tab:
+        render_wrangle_tab(st.session_state.working_df)
+
+    with combine_tab:
+        render_combine_tab(st.session_state.working_df)
