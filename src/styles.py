@@ -8,6 +8,7 @@ def load_styles() -> None:
         """
         <style>
         :root {
+            --primary-color: #356AE6 !important;
             --st-primary-color: #356AE6 !important;
             --dl-ink: #17243B;
             --dl-muted: #64748B;
@@ -21,6 +22,7 @@ def load_styles() -> None:
         }
 
         .stApp {
+            --primary-color: #356AE6 !important;
             --st-primary-color: #356AE6 !important;
             background:
                 radial-gradient(ellipse at 90% 0%, rgba(83, 126, 232, .075), transparent 32rem),
@@ -643,12 +645,37 @@ def load_styles() -> None:
         body .stApp [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
             border-bottom: 0 !important;
         }
+        /* Streamlit 1.5x renders tab labels with React Aria's stTab test id. */
+        body .stApp [data-testid="stTabs"] [data-testid="stTab"] {
+            --indicator-color: transparent !important;
+            border-bottom-color: transparent !important;
+            box-shadow: none !important;
+        }
+        body .stApp [data-testid="stTabs"] [data-testid="stTab"]::before,
+        body .stApp [data-testid="stTabs"] [data-testid="stTab"]::after,
+        body .stApp [data-testid="stTabs"] [data-testid="stTab"] [data-testid*="indicator"],
+        body .stApp [data-testid="stTabs"] [data-testid="stTab"] [data-testid*="Indicator"] {
+            display: none !important;
+            background: transparent !important;
+            border-color: transparent !important;
+        }
+        body .stApp [data-testid="stTabs"] [data-testid="stTab"][aria-selected="true"] {
+            border-bottom: 0 !important;
+            box-shadow: none !important;
+        }
         /* Reinforce the theme color on filter widgets with their own rendered marks. */
-        body .stApp [data-testid="stSlider"] [role="slider"] {
+        body .stApp [data-testid="stSlider"] [role="slider"],
+        body .stApp [data-testid="stSlider"] [data-testid*="Thumb"] {
             background-color: #356AE6 !important;
             border-color: #356AE6 !important;
         }
-        body .stApp [data-testid="stMultiSelect"] [data-baseweb="tag"] {
+        body .stApp [data-testid="stSlider"] [data-testid*="TrackFill"],
+        body .stApp [data-testid="stSlider"] [data-testid*="trackFill"] {
+            background-color: #356AE6 !important;
+            border-color: #356AE6 !important;
+        }
+        body .stApp [data-testid="stMultiSelect"] [data-baseweb="tag"],
+        body .stApp [data-testid="stMultiSelect"] [data-testid*="Tag"] {
             background-color: #356AE6 !important;
         }
         body .stApp [data-testid="stMultiSelect"] [role="option"][aria-selected="true"] {
@@ -656,10 +683,24 @@ def load_styles() -> None:
             background-color: #EAF0FF !important;
         }
         body .stApp [data-testid="stCheckbox"] [role="checkbox"][aria-checked="true"],
-        body .stApp [data-testid="stCheckbox"] input:checked + div {
+        body .stApp [data-testid="stCheckbox"] input:checked + div,
+        body .stApp [data-testid="stCheckbox"] input:checked,
+        body .stApp [data-testid="stCheckbox"] [role="checkbox"][data-state="checked"] {
             color: #356AE6 !important;
             background-color: #356AE6 !important;
             border-color: #356AE6 !important;
+        }
+        body .stApp [data-testid="stCheckbox"] input,
+        body .stApp [data-testid="stSlider"] input {
+            accent-color: #356AE6 !important;
+        }
+        body .stApp [data-testid="stCheckbox"] [data-baseweb="checkbox"] > div,
+        body .stApp [data-testid="stCheckbox"] [role="checkbox"][aria-checked="true"] > div {
+            background-color: #356AE6 !important;
+            border-color: #356AE6 !important;
+        }
+        body .stApp [data-testid="stCheckbox"] svg {
+            fill: #FFFFFF !important;
         }
         @media (max-height: 800px) {
             [data-testid="stSidebar"] [data-testid="stButton"] button {
