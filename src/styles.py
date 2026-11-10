@@ -8,7 +8,6 @@ def load_styles() -> None:
         """
         <style>
         :root {
-            --primary-color: #356AE6 !important;
             --st-primary-color: #356AE6 !important;
             --dl-ink: #17243B;
             --dl-muted: #64748B;
@@ -22,7 +21,6 @@ def load_styles() -> None:
         }
 
         .stApp {
-            --primary-color: #356AE6 !important;
             --st-primary-color: #356AE6 !important;
             background:
                 radial-gradient(ellipse at 90% 0%, rgba(83, 126, 232, .075), transparent 32rem),
@@ -674,9 +672,12 @@ def load_styles() -> None:
             background-color: #356AE6 !important;
             border-color: #356AE6 !important;
         }
+        /* Keep selected multiselect chips neutral; blue fill overemphasizes filter fields. */
         body .stApp [data-testid="stMultiSelect"] [data-baseweb="tag"],
         body .stApp [data-testid="stMultiSelect"] [data-testid*="Tag"] {
-            background-color: #356AE6 !important;
+            background-color: #EEF2F8 !important;
+            border-color: #D9E1ED !important;
+            color: #34445F !important;
         }
         body .stApp [data-testid="stMultiSelect"] [role="option"][aria-selected="true"] {
             color: #234DA5 !important;
