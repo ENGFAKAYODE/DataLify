@@ -615,6 +615,32 @@ def load_styles() -> None:
             -webkit-text-fill-color: #FFFFFF !important;
             fill: #FFFFFF !important;
         }
+        /* Keep primary actions blue even when Streamlit's deployed theme defaults to red. */
+        body .stApp button[kind*="primary"],
+        body .stApp button[data-testid*="BaseButton-primary"],
+        body .stApp [data-testid*="BaseButton-primary"] {
+            background-color: #356AE6 !important;
+            background-image: none !important;
+            border-color: #356AE6 !important;
+        }
+        body .stApp button[kind*="primary"]:hover,
+        body .stApp button[data-testid*="BaseButton-primary"]:hover,
+        body .stApp [data-testid*="BaseButton-primary"]:hover {
+            background-color: #2454C6 !important;
+            border-color: #2454C6 !important;
+        }
+        /* Streamlit's red tab underline is unnecessary with our filled selected tabs. */
+        body .stApp [data-testid="stTabs"] [data-baseweb="tab-highlight"],
+        body .stApp [data-testid="stTabs"] [data-baseweb="tab-border"],
+        body .stApp [data-testid="stTabs"] [role="tab"]::before,
+        body .stApp [data-testid="stTabs"] [role="tab"]::after {
+            display: none !important;
+            background-color: #356AE6 !important;
+            border-color: #356AE6 !important;
+        }
+        body .stApp [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+            border-bottom-color: #2857BE !important;
+        }
         @media (max-height: 800px) {
             [data-testid="stSidebar"] [data-testid="stButton"] button {
                 min-height: 1.78rem !important; padding-top: .14rem !important; padding-bottom: .14rem !important;

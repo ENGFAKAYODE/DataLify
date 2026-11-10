@@ -1,5 +1,6 @@
 
 from datetime import datetime
+import base64
 
 import pandas as pd
 import plotly.express as px
@@ -520,10 +521,18 @@ def render_quality_lab():
                 if removed_count:
                     st.session_state.prepare_history.append(df.copy(deep=True))
                     st.session_state.working_df = cleaned_df
-                    st.session_state.prepare_recipe.append({
+                    recipe_entry = {
                         "description": f"Remove {removed_count} duplicate rows from Quality Lab",
                         "timestamp": datetime.now().isoformat(timespec="seconds"),
-                    })
+                        "python_code": "df = df.drop_duplicates().reset_index(drop=True)",
+                    }
+                    recipe = st.session_state.prepare_recipe
+                    if (any(not item.get("python_code") for item in recipe)
+                            and not any(item.get("python_baseline_csv") for item in recipe)):
+                        recipe_entry["python_baseline_csv"] = base64.b64encode(
+                            df.to_csv(index=False).encode("utf-8")
+                        ).decode("ascii")
+                    recipe.append(recipe_entry)
                     st.session_state.prepare_updated_at = datetime.now().strftime(
                         "%Y-%m-%d %H:%M"
                     )

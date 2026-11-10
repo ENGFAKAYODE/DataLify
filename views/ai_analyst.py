@@ -8,6 +8,8 @@ Never place API keys directly in this source file.
 
 import json
 import os
+from importlib import import_module, util
+from io import BytesIO
 from typing import Any
 
 import pandas as pd
@@ -53,6 +55,75 @@ def _get_api_key() -> str | None:
     """Read the OpenRouter key without displaying it or hardcoding it."""
     key = _get_setting("OPENROUTER_API_KEY")
     return key or None
+
+
+def _decision_brief_pptx(brief: dict[str, str]) -> bytes:
+    """Create a clean, editable PowerPoint presentation from a decision brief."""
+    pptx = import_module("pptx")
+    RGBColor = import_module("pptx.dml.color").RGBColor
+    Inches, Pt = import_module("pptx.util").Inches, import_module("pptx.util").Pt
+    Presentation = pptx.Presentation
+    presentation = Presentation()
+    presentation.slide_width = Inches(13.333)
+    presentation.slide_height = Inches(7.5)
+
+    title_color = RGBColor(23, 36, 59)
+    accent_color = RGBColor(40, 87, 167)
+
+    cover = presentation.slides.add_slide(presentation.slide_layouts[6])
+    title = cover.shapes.add_textbox(Inches(.8), Inches(.8), Inches(11.7), Inches(1.1)).text_frame
+    title.text = "Decision Brief"
+    title.paragraphs[0].font.size = Pt(34)
+    title.paragraphs[0].font.bold = True
+    title.paragraphs[0].font.color.rgb = title_color
+    details = cover.shapes.add_textbox(Inches(.85), Inches(2.15), Inches(11.4), Inches(3.8)).text_frame
+    details.word_wrap = True
+    for label, value in (("Prepared for", brief.get("audience", "")),
+                         ("Decision", brief.get("decision", "")),
+                         ("Context", brief.get("context", "") or "Not provided")):
+        paragraph = details.paragraphs[0] if not details.paragraphs[0].text else details.add_paragraph()
+        paragraph.text = f"{label}: {value}"
+        paragraph.space_after = Pt(18)
+        paragraph.font.size = Pt(20 if label != "Context" else 16)
+        paragraph.font.color.rgb = accent_color if label == "Decision" else title_color
+
+    # Keep markdown headings and lists readable as editable PowerPoint text.
+    blocks: list[tuple[str, bool, bool]] = []
+    for raw_line in brief.get("answer", "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = line.startswith("#")
+        line = line.lstrip("#").strip() if heading else line
+        bullet = line.startswith(("- ", "* ", "• "))
+        line = line[2:].strip() if bullet else line
+        if line:
+            blocks.append((line, heading, bullet))
+
+    chunks = [blocks[index:index + 9] for index in range(0, len(blocks), 9)] or [[("Brief content unavailable", False, False)]]
+    for chunk in chunks:
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        heading_text = next((line for line, is_heading, _ in chunk if is_heading), "Decision Brief")
+        slide_title = slide.shapes.add_textbox(Inches(.65), Inches(.35), Inches(12), Inches(.65)).text_frame
+        slide_title.text = heading_text
+        slide_title.paragraphs[0].font.size = Pt(25)
+        slide_title.paragraphs[0].font.bold = True
+        slide_title.paragraphs[0].font.color.rgb = title_color
+        body = slide.shapes.add_textbox(Inches(.8), Inches(1.25), Inches(11.8), Inches(5.8)).text_frame
+        body.word_wrap = True
+        body.margin_left = Inches(.12)
+        for line, is_heading, is_bullet in chunk:
+            paragraph = body.paragraphs[0] if not body.paragraphs[0].text else body.add_paragraph()
+            paragraph.text = line
+            paragraph.font.size = Pt(16 if is_heading else 14)
+            paragraph.font.bold = is_heading
+            paragraph.font.color.rgb = accent_color if is_heading else title_color
+            paragraph.level = 1 if is_bullet else 0
+            paragraph.space_after = Pt(9)
+
+    output = BytesIO()
+    presentation.save(output)
+    return output.getvalue()
 
 
 def _json_safe(value: Any) -> Any:
@@ -663,6 +734,16 @@ def render_ai_brief() -> None:
     if previous_brief:
         st.markdown("### Executive brief")
         st.markdown(previous_brief["answer"])
+        if util.find_spec("pptx") is not None:
+            st.download_button(
+                "Export decision brief as PowerPoint",
+                data=_decision_brief_pptx(previous_brief),
+                file_name="datalify_decision_brief.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key="download_decision_brief_pptx",
+            )
+        else:
+            st.info("Install project dependencies with `pip install -r requirements.txt` to enable PowerPoint export.")
 
     st.divider()
     st.markdown("### ASK THE DATA")

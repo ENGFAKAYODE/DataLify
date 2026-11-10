@@ -1,7 +1,6 @@
 from itertools import combinations
 from datetime import datetime
 from io import BytesIO
-from pathlib import Path
 import re
 import textwrap
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -12,6 +11,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.image import imread
 from matplotlib.figure import Figure
 import plotly.express as px
+import plotly.io as pio
 import streamlit as st
 
 from src.palette import DATALIFY_COLORS
@@ -82,14 +82,13 @@ def _kpi_comparison(dataframe, definition):
         if previous == 0:
             return current, "Prior period is zero", "off"
         change = (current - previous) / abs(previous) * 100
-        return current, f"{change:+.1f}% vs prior {frequency.lower()}", "normal"
+        if np.isclose(change, 0):
+            return current, "No change · 0.0%", "off"
+        direction = "Increase" if change > 0 else "Decrease"
+        return current, f"{direction} · {change:+.1f}%", "normal"
 
-    if comparison == "Industry benchmark":
-        target = definition.get("benchmark")
-        status_label = "Industry benchmark"
-    else:
-        target = definition.get("target")
-        status_label = "Target"
+    target = definition.get("target")
+    status_label = "Target"
     if target is None:
         return _kpi_measure(dataframe, definition), f"{status_label} not set", "off"
     actual = _kpi_measure(dataframe, definition)
@@ -106,11 +105,29 @@ def _kpi_comparison(dataframe, definition):
         met = np.isclose(actual, target)
     else:
         met = actual >= target
-    if comparison == "Target":
+    if np.isclose(actual, target):
+        if met:
+            return actual, "100% met", "normal"
+        relation = "below" if direction.startswith(("At least", "Greater than")) else "above"
+        return actual, f"0% {relation} target", "inverse"
+    if np.isclose(target, 0):
         status = "Target met" if met else "Target missed"
-    else:
-        status = "Benchmark met" if met else "Benchmark missed"
-    return actual, status, "normal" if met else "inverse"
+        return actual, status, "normal" if met else "inverse"
+
+    difference_percent = abs((actual - target) / abs(target) * 100)
+    if direction.startswith(("At least", "Greater than")):
+        if met:
+            status = f"+{difference_percent:.1f}% above target"
+            return actual, status, "normal"
+        return actual, f"-{difference_percent:.1f}% below target", "normal"
+    if direction.startswith(("At most", "Less than")):
+        if met:
+            status = f"-{difference_percent:.1f}% headroom" if not np.isclose(difference_percent, 0) else "100% met"
+            return actual, status, "inverse"
+        return actual, f"+{difference_percent:.1f}% above target (missed)", "inverse"
+    if actual > target:
+        return actual, f"+{difference_percent:.1f}% above target (missed)", "inverse"
+    return actual, f"-{difference_percent:.1f}% below target (missed)", "normal"
 
 
 def _format_kpi(value, definition):
@@ -118,6 +135,132 @@ def _format_kpi(value, definition):
         return "N/A"
     number = f"{value:,.2f}".rstrip("0").rstrip(".")
     return f"{definition.get('prefix', '')}{number}{definition.get('suffix', '')}"
+
+
+def _kpi_status_color(status):
+    normalized = status.lower()
+    if any(word in normalized for word in ("decrease", "missed", "remaining", "over limit", "below")):
+        return "#C44955"
+    if any(word in normalized for word in ("increase", "met", "headroom", "above")):
+        return "#16836F"
+    if any(word in normalized for word in ("no change", "not set", "unavailable", "zero")):
+        return "#64748B"
+    return "#64748B"
+
+
+def _kpi_status_arrow(status):
+    normalized = status.lower()
+    if "increase" in normalized or "above" in normalized or "over limit" in normalized:
+        return chr(8593)
+    if "decrease" in normalized or "remaining" in normalized or "headroom" in normalized or "below" in normalized:
+        return chr(8595)
+    if "no change" in normalized or "met" in normalized:
+        return chr(8594)
+    return ""
+
+
+def _dashboard_timestamp():
+    timestamp = datetime.now().astimezone()
+    timezone_name = timestamp.tzname() or ""
+    timezone_short = {
+        "Central Standard Time": "CST",
+        "Central Daylight Time": "CDT",
+    }.get(timezone_name, timezone_name)
+    formatted = timestamp.strftime("%b %d, %Y at %I:%M %p")
+    return f"{formatted} {timezone_short}".strip()
+
+
+def _render_live_dashboard(dataframe, source_dataframe):
+    """Show the KPIs and charts the user has added to this session's dashboard."""
+    definitions = st.session_state.setdefault("business_kpis", [])
+    for definition in definitions:
+        if definition.get("comparison_type") == "Industry benchmark":
+            definition["comparison_type"] = "Target"
+            definition["target"] = definition.get("benchmark")
+            definition.pop("benchmark", None)
+    visualizations = st.session_state.setdefault("viz_export_items", [])
+    captured_at = _dashboard_timestamp()
+    selected_filters = _applied_filter_descriptions(source_dataframe)
+
+    st.markdown(
+        "<style>"
+        "[class*='st-key-viz_dashboard_chart_card_'] {"
+        "background:#FFFFFF!important;border:1px solid #E3EAF4!important;"
+        "border-radius:12px!important;padding:.85rem!important;"
+        "}"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("### Live dashboard")
+
+    with st.container(border=True):
+        title_col, time_col = st.columns([3.4, 2.1], vertical_alignment="center")
+        with title_col:
+            st.markdown(
+                "<div style='font-size:1.8rem;font-weight:800;line-height:1.15;color:#17243B'>"
+                "Datalify dashboard</div>",
+                unsafe_allow_html=True,
+            )
+            st.caption("Live view of your selected metrics and visualizations")
+        with time_col:
+            st.caption("Last updated")
+            st.markdown(f"**{captured_at}**")
+
+        st.markdown("**Filters selected**")
+        st.caption(" · ".join(selected_filters))
+
+        if not definitions and not visualizations:
+            st.info("Your dashboard is ready. Create a metric or visualization to get started.")
+            return
+
+        if definitions:
+            for start in range(0, len(definitions), 4):
+                card_columns = st.columns(4, gap="medium")
+                for offset, column in enumerate(card_columns):
+                    index = start + offset
+                    if index >= len(definitions):
+                        continue
+                    definition = definitions[index]
+                    actual, status, delta_color = _kpi_comparison(dataframe, definition)
+                    with column:
+                        st.metric(
+                            definition["name"], _format_kpi(actual, definition),
+                            delta=status, delta_color=delta_color,
+                            help=f"{definition['calculation']} of {definition['measure_field']} in the current filtered data.",
+                        )
+        if visualizations:
+            if definitions:
+                st.markdown("<div style='height:.35rem'></div>", unsafe_allow_html=True)
+            for start in range(0, len(visualizations), 2):
+                chart_columns = st.columns(2, gap="large")
+                for offset, column in enumerate(chart_columns):
+                    index = start + offset
+                    if index >= len(visualizations):
+                        continue
+                    saved = visualizations[index]
+                    with column, st.container(key=f"viz_dashboard_chart_card_{index}"):
+                        if saved.get("figure_json"):
+                            figure = pio.from_json(saved["figure_json"])
+                            figure.update_layout(paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF")
+                            st.plotly_chart(
+                                figure, width="stretch", key=f"viz_dashboard_chart_{index}",
+                                config={"displaylogo": False},
+                            )
+                        elif saved.get("png"):
+                            st.image(saved["png"], width="stretch")
+
+        st.divider()
+        if definitions or visualizations:
+            st.download_button(
+                "Export dashboard",
+                data=_png_export_bundle(dataframe),
+                file_name="datalify_dashboard.zip",
+                mime="application/zip",
+                type="primary",
+                icon=":material/download:",
+                key="viz_export_png_bundle",
+                help="Capture the current metric values and download the dashboard and visualizations as PNGs.",
+            )
 
 
 def _correlation(dataframe, method):
@@ -128,7 +271,7 @@ def _correlation(dataframe, method):
     return dataframe.corr(method="pearson")
 
 
-def _chart_png(chart_type, dataframe, x_field, y_field, color_field, aggregation):
+def _chart_png(chart_type, dataframe, x_field, y_field, color_field, aggregation, title_override=None):
     """Render a saved chart as a PNG using Datalify's installed Matplotlib."""
     figure = Figure(figsize=(10, 5.6), dpi=170, facecolor="white")
     FigureCanvasAgg(figure)
@@ -198,6 +341,8 @@ def _chart_png(chart_type, dataframe, x_field, y_field, color_field, aggregation
         axis.set_ylabel(str(y_field))
         axis.legend(title=str(color_field) if color_field else None, frameon=False)
 
+    if title_override:
+        axis.set_title(title_override)
     axis.grid(axis="y", color="#E8EDF5", linewidth=.7)
     axis.set_axisbelow(True)
     if chart_type not in ("Pie", "Scatter"):
@@ -224,12 +369,12 @@ def _kpi_dashboard_png(dataframe, definitions):
         axis.set_yticks([])
         actual, status, _ = _kpi_comparison(dataframe, definition)
         value = _format_kpi(actual, definition)
-        status_color = "#16836F" if status in ("On target", "Target met", "Benchmark met") else "#2857A7" if "vs prior" in status else "#64748B" if "not set" in status.lower() or "unavailable" in status.lower() else "#C44955"
+        status_color = _kpi_status_color(status)
         axis.text(.06, .78, definition.get("name", "Business KPI"), transform=axis.transAxes,
                   fontsize=13, weight="bold", color="#34445F")
         axis.text(.06, .44, value, transform=axis.transAxes, fontsize=24,
                   weight="bold", color="#17243B")
-        axis.text(.06, .16, status, transform=axis.transAxes, fontsize=10,
+        axis.text(.06, .16, f"{_kpi_status_arrow(status)} {status}".strip(), transform=axis.transAxes, fontsize=10,
                   weight="medium", color=status_color)
     figure.suptitle("Datalify | Business KPI scorecard", fontsize=17, weight="bold", color="#17243B", y=.99)
     figure.tight_layout(rect=(0, 0, 1, .95))
@@ -268,18 +413,18 @@ def _applied_filter_descriptions(dataframe):
 def _dashboard_png(dataframe, definitions, visualizations, filters):
     """Compose KPI cards above saved charts with a branded, filter-aware header."""
     kpi_columns = 4
-    kpi_rows = max(1, (len(definitions) + kpi_columns - 1) // kpi_columns)
-    chart_rows = max(1, (len(visualizations) + 1) // 2)
+    kpi_rows = (len(definitions) + kpi_columns - 1) // kpi_columns
+    chart_rows = (len(visualizations) + 1) // 2
     filter_lines = []
     for item in filters:
         filter_lines.extend(textwrap.wrap(str(item), width=145) or [""])
-    header_height = max(1.55, 1.0 + .17 * len(filter_lines))
-    row_heights = [header_height] + [1.35] * kpi_rows + [3.35] * chart_rows
-    figure = Figure(figsize=(14, sum(row_heights) + .45), dpi=170, facecolor="#F4F7FB")
+    header_height = max(1.75, 1.05 + .17 * len(filter_lines))
+    row_heights = [header_height] + [1.42] * kpi_rows + [3.35] * chart_rows
+    figure = Figure(figsize=(14, sum(row_heights) + .35), dpi=170, facecolor="#F5F7FB")
     FigureCanvasAgg(figure)
     grid = figure.add_gridspec(len(row_heights), 4, height_ratios=row_heights,
-                               left=.035, right=.965, top=.985, bottom=.035,
-                               hspace=.24, wspace=.16)
+                               left=.035, right=.965, top=.98, bottom=.04,
+                               hspace=.12, wspace=.16)
 
     header = figure.add_subplot(grid[0, :])
     header.set_facecolor("white")
@@ -287,19 +432,13 @@ def _dashboard_png(dataframe, definitions, visualizations, filters):
     header.set_yticks([])
     for spine in header.spines.values():
         spine.set_edgecolor("#DCE5F2")
-    logo_path = Path(__file__).resolve().parents[1] / "assets" / "insightprovider.png"
-    if logo_path.is_file():
-        logo_axis = header.inset_axes([.012, .40, .13, .48])
-        logo_axis.imshow(imread(logo_path))
-        logo_axis.axis("off")
-    header.text(.17, .75, "Datalify analysis dashboard", transform=header.transAxes,
-                fontsize=17, fontweight="bold", color="#17243B", va="center")
-    generated = datetime.now().astimezone().strftime("%b %d, %Y at %I:%M %p %Z")
-    header.text(.98, .78, f"Generated {generated}", transform=header.transAxes,
+    header.text(.02, .73, "Datalify dashboard", transform=header.transAxes,
+                fontsize=20, fontweight="bold", color="#17243B", va="center")
+    header.text(.98, .78, f"Last updated {_dashboard_timestamp()}", transform=header.transAxes,
                 ha="right", va="center", fontsize=9, color="#64748B")
-    header.text(.17, .48, "Filters applied", transform=header.transAxes,
+    header.text(.02, .47, "Filters selected", transform=header.transAxes,
                 fontsize=9, fontweight="bold", color="#2857A7", va="top")
-    header.text(.17, .38, "\n".join(filter_lines), transform=header.transAxes,
+    header.text(.02, .36, "\n".join(filter_lines), transform=header.transAxes,
                 fontsize=8.2, color="#42516A", va="top", linespacing=1.3)
 
     for index in range(kpi_rows * kpi_columns):
@@ -311,18 +450,15 @@ def _dashboard_png(dataframe, definitions, visualizations, filters):
         for spine in axis.spines.values():
             spine.set_edgecolor("#DCE5F2")
         if index >= len(definitions):
-            if index == 0 and not definitions:
-                axis.text(.5, .5, "No KPI cards added", ha="center", va="center",
-                          transform=axis.transAxes, fontsize=10, color="#64748B")
             continue
         definition = definitions[index]
         actual, status, _ = _kpi_comparison(dataframe, definition)
-        status_color = "#16836F" if status in ("On target", "Target met", "Benchmark met") else "#2857A7" if "vs prior" in status else "#64748B" if "not set" in status.lower() or "unavailable" in status.lower() else "#C44955"
+        status_color = _kpi_status_color(status)
         axis.text(.07, .76, definition.get("name", "Business KPI"), transform=axis.transAxes,
                   fontsize=10, fontweight="bold", color="#34445F", va="center")
         axis.text(.07, .45, _format_kpi(actual, definition), transform=axis.transAxes,
                   fontsize=19, fontweight="bold", color="#17243B", va="center")
-        axis.text(.07, .16, status, transform=axis.transAxes,
+        axis.text(.07, .16, f"{_kpi_status_arrow(status)} {status}".strip(), transform=axis.transAxes,
                   fontsize=8, color=status_color, va="center")
 
     for index in range(chart_rows * 2):
@@ -334,18 +470,13 @@ def _dashboard_png(dataframe, definitions, visualizations, filters):
         axis.set_xticks([])
         axis.set_yticks([])
         if index >= len(visualizations):
-            if index == 0 and not visualizations:
-                axis.text(.5, .5, "No charts added", ha="center", va="center",
-                          transform=axis.transAxes, fontsize=11, color="#64748B")
             continue
         saved = visualizations[index]
         axis.imshow(imread(BytesIO(saved["png"])))
-        axis.set_title(saved.get("title", f"Visualization {index + 1}"),
-                       loc="left", fontsize=10, color="#34445F", pad=5)
         axis.axis("off")
 
     image = BytesIO()
-    figure.savefig(image, format="png", dpi=170, bbox_inches="tight", facecolor="#F4F7FB")
+    figure.savefig(image, format="png", dpi=170, bbox_inches="tight", facecolor="#F5F7FB")
     return image.getvalue()
 
 
@@ -353,14 +484,9 @@ def _png_export_bundle(dataframe):
     definitions = st.session_state.get("business_kpis", [])
     visualizations = st.session_state.get("viz_export_items", [])
     current_filters = _applied_filter_descriptions(st.session_state.get("working_df", dataframe))
-    filter_details = [f"KPI dashboard: {', '.join(current_filters)}"]
-    for visualization in visualizations:
-        chart_filters = visualization.get("filters", ["No filters applied"])
-        filter_details.append(f"{visualization['title']}: {', '.join(chart_filters)}")
-
     bundle = BytesIO()
     with ZipFile(bundle, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("datalify_dashboard.png", _dashboard_png(dataframe, definitions, visualizations, filter_details))
+        archive.writestr("datalify_dashboard.png", _dashboard_png(dataframe, definitions, visualizations, current_filters))
         if definitions:
             archive.writestr("datalify_kpis.png", _kpi_dashboard_png(dataframe, definitions))
         for index, visualization in enumerate(visualizations, start=1):
@@ -480,9 +606,8 @@ def _render_relationships(dataframe):
 
 
 def _render_kpi_builder(dataframe):
-    st.markdown("### Business KPIs")
-    st.markdown("**Define the numbers leadership should watch**")
-    st.caption("KPIs you add here are collected into a dashboard-style scorecard and included in the PNG export.")
+    st.markdown("### Add a KPI")
+    st.caption("Create a KPI card for the live dashboard. Use the same name to update an existing KPI.")
     definitions = st.session_state.setdefault("business_kpis", [])
     numeric_fields = dataframe.select_dtypes(include="number").columns.tolist()
     measure_fields = numeric_fields or dataframe.columns.tolist()
@@ -506,18 +631,20 @@ def _render_kpi_builder(dataframe):
     with suffix_col:
         suffix = st.text_input("Suffix", value="", key="viz_kpi_suffix", help="Optional unit after the value, such as %, orders, or customers.")
     date_fields = _date_columns(dataframe)
-    comparison_type = st.selectbox(
-        "Compare against",
-        ["Target", "Period over period", "Industry benchmark"],
-        key="viz_kpi_comparison_type",
-    )
-
     comparison_value = None
     period_field = None
     period_frequency = "Month"
     target_direction = "At least"
+    compare_col, value_col, direction_col = st.columns([1, 1, 1])
+    if st.session_state.get("viz_kpi_comparison_type") == "Industry benchmark":
+        del st.session_state["viz_kpi_comparison_type"]
+    with compare_col:
+        comparison_type = st.selectbox(
+            "Compare against",
+            ["Target", "Period over period"],
+            key="viz_kpi_comparison_type",
+        )
     if comparison_type == "Target":
-        value_col, direction_col = st.columns([1.2, 1])
         with value_col:
             comparison_value_text = st.text_input(
                 "Target value", placeholder="Enter the target to compare against",
@@ -529,29 +656,15 @@ def _render_kpi_builder(dataframe):
                 ["At least (≥)", "Greater than (>)", "At most (≤)", "Less than (<)", "Exactly (=)"],
                 key="viz_kpi_target_direction",
             )
-    elif comparison_type == "Industry benchmark":
-        value_col, direction_col = st.columns([1.2, 1])
-        with value_col:
-            comparison_value_text = st.text_input(
-                "Industry benchmark", placeholder="Enter the benchmark value",
-                key="viz_kpi_industry_benchmark",
-            )
-        with direction_col:
-            target_direction = st.selectbox(
-                "Benchmark is met when",
-                ["At least (≥)", "Greater than (>)", "At most (≤)", "Less than (<)", "Exactly (=)"],
-                key="viz_kpi_benchmark_direction",
-            )
     else:
-        period_col, frequency_col = st.columns([1.2, .8])
-        with period_col:
+        with value_col:
             period_field = st.selectbox(
                 "Date field for period comparison",
                 date_fields or ["No date field detected"],
                 key="viz_kpi_period_field",
                 help="The latest available period is compared with the one immediately before it.",
             )
-        with frequency_col:
+        with direction_col:
             period_frequency = st.selectbox(
                 "Period", ["Week", "Month", "Quarter", "Year"], index=1,
                 key="viz_kpi_period_frequency",
@@ -561,16 +674,13 @@ def _render_kpi_builder(dataframe):
         if not business_name.strip():
             st.error("Enter a business name for this KPI.")
         else:
-            if comparison_type in ("Target", "Industry benchmark"):
+            if comparison_type == "Target":
                 try:
                     comparison_value = float(comparison_value_text.replace(",", "").strip()) if comparison_value_text.strip() else None
                 except ValueError:
-                    st.error("The target or benchmark must be a number, or left blank.")
+                    st.error("The target must be a number, or left blank.")
                     comparison_value = "invalid"
             if comparison_value == "invalid":
-                return
-            if comparison_type == "Industry benchmark" and comparison_value is None:
-                st.error("Enter the industry benchmark value to compare against.")
                 return
             if comparison_type == "Period over period" and period_field not in date_fields:
                 st.error("Add or select a valid date field for period-over-period comparison.")
@@ -581,7 +691,6 @@ def _render_kpi_builder(dataframe):
                     "calculation": calculation, "prefix": prefix, "suffix": suffix,
                     "comparison_type": comparison_type,
                     "target": comparison_value if comparison_type == "Target" else None,
-                    "benchmark": comparison_value if comparison_type == "Industry benchmark" else None,
                     "target_direction": target_direction,
                     "period_field": str(period_field) if period_field in date_fields else None,
                     "period_frequency": period_frequency,
@@ -593,44 +702,18 @@ def _render_kpi_builder(dataframe):
                     definitions[existing] = definition
                 st.rerun()
 
-    if not definitions:
-        st.info("Create your first KPI below. KPI definitions are included in exported project recipes.")
-        return
-
-    st.markdown("#### KPI scorecard")
-    for start in range(0, len(definitions), 3):
-        card_columns = st.columns(3, gap="medium")
-        for offset, column in enumerate(card_columns):
-            index = start + offset
-            if index >= len(definitions):
-                continue
-            definition = definitions[index]
-            actual, status, delta_color = _kpi_comparison(dataframe, definition)
-            formatted = _format_kpi(actual, definition)
-            with column:
-                st.metric(
-                    definition["name"], formatted, delta=status, delta_color=delta_color,
-                    help=f"{definition['calculation']} of {definition['measure_field']} in the current filtered data.",
+    if definitions:
+        with st.expander(f"Manage dashboard KPIs ({len(definitions)})"):
+            for index, definition in enumerate(definitions):
+                detail_col, remove_col = st.columns([4, 1])
+                detail_col.caption(
+                    f"{definition['name']} · {definition['calculation']} of {definition['measure_field']}"
                 )
-                segment_field = definition.get("segment_field")
-                if segment_field in dataframe.columns:
-                    grouped = dataframe.groupby(segment_field, dropna=False)[definition["measure_field"]]
-                    if definition["calculation"] == "Count":
-                        values = grouped.count()
-                    else:
-                        numeric = dataframe.assign(**{definition["measure_field"]: pd.to_numeric(dataframe[definition["measure_field"]], errors="coerce")})
-                        grouped = numeric.groupby(segment_field, dropna=False)[definition["measure_field"]]
-                        operation = {"Sum": "sum", "Average": "mean", "Median": "median", "Minimum": "min", "Maximum": "max"}.get(definition["calculation"], "sum")
-                        values = getattr(grouped, operation)()
-                    segment_data = values.rename("Value").reset_index().sort_values("Value", ascending=False).head(10)
-                    segment_data[segment_field] = segment_data[segment_field].fillna("(Missing)").astype(str)
-                    chart = px.bar(segment_data, x=segment_field, y="Value", color_discrete_sequence=DATALIFY_COLORS, title=f"{definition['name']} by {segment_field}")
-                    chart.update_layout(template="plotly_white", height=260, margin=dict(l=8, r=8, t=45, b=15), showlegend=False)
-                    st.plotly_chart(chart, width="stretch", config={"displaylogo": False})
-                if st.button("Remove KPI", key=f"viz_remove_kpi_{index}"):
+                if remove_col.button("Remove", key=f"viz_remove_kpi_{index}"):
                     definitions.pop(index)
                     st.rerun()
-
+    else:
+        st.info("Create a KPI to add it to the live dashboard.")
 
 def render_visualization_studio():
     """Render Datalify's interactive Visualization Studio."""
@@ -638,8 +721,7 @@ def render_visualization_studio():
     st.markdown("## Visualization Studio")
     px.defaults.color_discrete_sequence = list(DATALIFY_COLORS)
     st.write(
-        "Filter records, explore patterns with charts and KPIs, download the filtered data, "
-        "or export saved KPIs and charts as dashboard-ready PNGs."
+        "Filter records, build a live dashboard from KPIs and charts, and export your visuals."
     )
 
     if st.session_state.get("working_df") is None:
@@ -797,10 +879,14 @@ def render_visualization_studio():
         )
         return
 
+    st.divider()
+    _render_live_dashboard(filtered_df, source_df)
+    st.divider()
+
     _render_kpi_builder(filtered_df)
 
     # Chart configuration
-    st.markdown("### Visualization")
+    st.markdown("### Build a visualization")
 
     numeric_columns = filtered_df.select_dtypes(include="number").columns.tolist()
     all_columns = filtered_df.columns.tolist()
@@ -1014,45 +1100,61 @@ def render_visualization_studio():
     if fig is not None:
         chart_title = getattr(getattr(fig.layout, "title", None), "text", None) or f"{chart_type} visualization"
         if st.button(
-            "Add viz to dashboard export",
+            "Add chart to live dashboard",
             type="primary",
             icon=":material/add_photo_alternate:",
             key="viz_add_current_export",
         ):
+            png_columns = list(dict.fromkeys(
+                [x_column] + ([y_column] if y_column is not None else [])
+                + ([color_column] if color_column else [])
+            ))
+            png_data = filtered_df[png_columns].copy()
+            if chart_type == "Scatter" and len(png_data) > 10000:
+                png_data = png_data.sample(n=10000, random_state=42)
             st.session_state.setdefault("viz_export_items", []).append({
                 "title": str(chart_title),
+                "figure_json": fig.to_json(),
+                "chart_type": chart_type,
+                "x_field": x_column,
+                "y_field": y_column,
+                "color_field": color_column,
+                "aggregation": aggregation,
+                "png_data": png_data,
                 "png": _chart_png(
-                    chart_type, filtered_df, x_column, y_column,
+                    chart_type, png_data, x_column, y_column,
                     color_column, aggregation,
                 ),
                 "filters": _applied_filter_descriptions(source_df),
             })
             st.rerun()
 
-    st.markdown("### Export KPIs and visualizations")
-    st.write("Add as many KPIs and charts as you need. Export them together as a ZIP of PNG images.")
     saved_visualizations = st.session_state.setdefault("viz_export_items", [])
     if saved_visualizations:
-        for index, saved in enumerate(saved_visualizations):
-            asset_col, remove_col = st.columns([5, 1])
-            asset_col.caption(f"Visualization {index + 1}: {saved['title']}")
-            if remove_col.button("Remove", key=f"viz_remove_export_{index}"):
-                saved_visualizations.pop(index)
-                st.rerun()
-    else:
-        st.caption("No visualizations have been added to the export yet.")
-
-    have_export_assets = bool(st.session_state.get("business_kpis") or saved_visualizations)
-    st.download_button(
-        "Export added KPIs and visualizations as PNGs",
-        data=_png_export_bundle(filtered_df),
-        file_name="datalify_visuals_and_kpis.zip",
-        mime="application/zip",
-        disabled=not have_export_assets,
-        type="primary",
-        icon=":material/download:",
-        key="viz_export_png_bundle",
-    )
+        with st.expander(f"Manage dashboard charts ({len(saved_visualizations)})"):
+            for index, saved in enumerate(saved_visualizations):
+                title_col, remove_col = st.columns([4, 1])
+                new_title = title_col.text_input(
+                    f"Chart {index + 1} title",
+                    value=saved.get("title", f"Visualization {index + 1}"),
+                    key=f"viz_rename_chart_{index}",
+                ).strip()
+                if new_title and new_title != saved.get("title"):
+                    saved["title"] = new_title
+                    if saved.get("figure_json"):
+                        saved_figure = pio.from_json(saved["figure_json"])
+                        saved_figure.update_layout(title=new_title)
+                        saved["figure_json"] = saved_figure.to_json()
+                    if saved.get("png_data") is not None:
+                        saved["png"] = _chart_png(
+                            saved["chart_type"], saved["png_data"], saved["x_field"],
+                            saved.get("y_field"), saved.get("color_field"),
+                            saved.get("aggregation", "Sum"), title_override=new_title,
+                        )
+                    st.rerun()
+                if remove_col.button("Remove", key=f"viz_remove_export_{index}"):
+                    saved_visualizations.pop(index)
+                    st.rerun()
 
     # Filtered data preview and download are kept together in the disclosure above.
 

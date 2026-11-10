@@ -1,4 +1,5 @@
 
+import base64
 import json
 from datetime import datetime
 
@@ -14,6 +15,24 @@ def prepare_styles():
     st.markdown(
         """
         <style>
+        /* Keep Streamlit's theme token and every primary Prepare action on-brand. */
+        body .stApp {
+            --st-primary-color: #356AE6 !important;
+        }
+        body .stApp button[kind*="primary"],
+        body .stApp button[data-testid*="BaseButton-primary"],
+        body .stApp [data-testid*="BaseButton-primary"] {
+            background-color: #356AE6 !important;
+            background-image: none !important;
+            border-color: #356AE6 !important;
+        }
+        body .stApp button[kind*="primary"]:hover,
+        body .stApp button[data-testid*="BaseButton-primary"]:hover,
+        body .stApp [data-testid*="BaseButton-primary"]:hover {
+            background-color: #2454C6 !important;
+            border-color: #2454C6 !important;
+        }
+
         /* Main page */
         .prep-hero {
             padding: 8px 0 20px 0;
@@ -134,6 +153,22 @@ def prepare_styles():
         }
 
         /* This page injects its own styles after the app theme; keep blue actions legible. */
+        body .stApp [data-testid="stButton"] button[kind*="primary"],
+        body .stApp [data-testid="stButton"] button[data-testid*="BaseButton-primary"],
+        body .stApp [data-testid="stFormSubmitButton"] button[kind*="primary"],
+        body .stApp [data-testid="stFormSubmitButton"] button[data-testid*="BaseButton-primary"],
+        body .stApp [data-testid="stFormSubmitButton"] [data-testid*="BaseButton-primary"] {
+            background: #356AE6 !important;
+            border-color: #356AE6 !important;
+        }
+        body .stApp [data-testid="stButton"] button[kind*="primary"]:hover,
+        body .stApp [data-testid="stButton"] button[data-testid*="BaseButton-primary"]:hover,
+        body .stApp [data-testid="stFormSubmitButton"] button[kind*="primary"]:hover,
+        body .stApp [data-testid="stFormSubmitButton"] button[data-testid*="BaseButton-primary"]:hover,
+        body .stApp [data-testid="stFormSubmitButton"] [data-testid*="BaseButton-primary"]:hover {
+            background: #2454C6 !important;
+            border-color: #2454C6 !important;
+        }
         [data-testid="stFormSubmitButton"] button[kind*="primary"],
         [data-testid="stFormSubmitButton"] button[data-testid*="BaseButton-primary"],
         [data-testid="stFormSubmitButton"] [data-testid*="BaseButton-primary"] {
@@ -196,19 +231,29 @@ def initialize_prepare_state():
             st.session_state[key] = value
 
 
-def record_transformation(new_df, description):
+def record_transformation(new_df, description, python_code=None):
     """Save the previous dataset and record one transformation."""
 
+    previous_df = st.session_state.working_df.copy(deep=True)
     st.session_state.prepare_history.append(
-        st.session_state.working_df.copy(deep=True)
+        previous_df
     )
 
     st.session_state.working_df = new_df.copy(deep=True)
 
-    st.session_state.prepare_recipe.append({
+    recipe_entry = {
         "description": description,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-    })
+    }
+    if python_code:
+        recipe_entry["python_code"] = python_code
+        existing_recipe = st.session_state.prepare_recipe
+        if (any(not item.get("python_code") for item in existing_recipe)
+                and not any(item.get("python_baseline_csv") for item in existing_recipe)):
+            recipe_entry["python_baseline_csv"] = base64.b64encode(
+                previous_df.to_csv(index=False).encode("utf-8")
+            ).decode("ascii")
+    st.session_state.prepare_recipe.append(recipe_entry)
 
     st.session_state.prepare_updated_at = datetime.now().strftime(
         "%Y-%m-%d %H:%M"
@@ -485,6 +530,21 @@ def render_missing_values(df):
                 record_transformation(
                     result,
                     f"{strategy} on {', '.join(selected_fields)}",
+                    python_code=(
+                        f"df = df.dropna(subset={selected_fields!r})"
+                        if strategy == "Remove rows with missing values"
+                        else "for column in " + repr(selected_fields) + ":\n"
+                        "    series = df[column]\n"
+                        + ("    value = series.mean() if pd.api.types.is_numeric_dtype(series) else None\n"
+                           if strategy == "Fill with mean" else
+                           "    value = series.median() if pd.api.types.is_numeric_dtype(series) else None\n"
+                           if strategy == "Fill with median" else
+                           "    modes = series.mode(dropna=True)\n    value = modes.iloc[0] if not modes.empty else None\n"
+                           if strategy == "Fill with mode" else
+                           f"    value = {constant_value!r}\n")
+                        + "    if value is not None and not pd.isna(value):\n"
+                        "        df[column] = series.fillna(value)"
+                    ),
                 )
                 st.success("Missing-value treatment applied.")
                 st.rerun()
@@ -559,6 +619,7 @@ def render_duplicates(df):
                 result,
                 f"Remove {removed} duplicate records using "
                 f"{', '.join(duplicate_fields)}; keep {keep_record}",
+                python_code=f"df = df.drop_duplicates(subset={duplicate_fields!r}, keep={keep_value!r}).reset_index(drop=True)",
             )
             st.success(f"Removed {removed:,} duplicate records.")
             st.rerun()
@@ -670,10 +731,39 @@ def render_field_types(df):
             if result.equals(df):
                 st.info("The field already has this type.")
             else:
+                if target_type == "Text":
+                    type_code = f"df[{field!r}] = df[{field!r}].astype('string')"
+                elif target_type in ("Integer", "Decimal"):
+                    type_code = (
+                        f"_text = df[{field!r}].astype('string').str.strip()\n"
+                        "_number = _text.str.extract(r'^([+-]?(?:\\d[\\d,]*\\.?\\d*|\\.\\d+))\\s*[^\\d.+-]*$', expand=False)\n"
+                        "_number = pd.to_numeric(_number.str.replace(',', '', regex=False), errors='raise')\n"
+                        f"df[{field!r}] = _number.astype('Int64')"
+                        if target_type == "Integer" else
+                        f"_text = df[{field!r}].astype('string').str.strip()\n"
+                        "_number = _text.str.extract(r'^([+-]?(?:\\d[\\d,]*\\.?\\d*|\\.\\d+))\\s*[^\\d.+-]*$', expand=False)\n"
+                        f"df[{field!r}] = pd.to_numeric(_number.str.replace(',', '', regex=False), errors='raise')"
+                    )
+                elif target_type == "Currency":
+                    type_code = (
+                        f"_raw = df[{field!r}].astype('string').str.strip()\n"
+                        "_negative = _raw.str.match(r'^\\(.*\\)$', na=False)\n"
+                        "_amount = _raw.str.replace(r'[^0-9.+-]', '', regex=True)\n"
+                        "_amount = _amount.mask(_negative, '-' + _amount).replace('', pd.NA)\n"
+                        f"df[{field!r}] = pd.to_numeric(_amount, errors='raise')"
+                    )
+                elif target_type == "Date":
+                    type_code = f"df[{field!r}] = pd.to_datetime(df[{field!r}], errors='raise')"
+                else:
+                    type_code = (
+                        f"_mapping = {{'true': True, 'false': False, '1': True, '0': False, 'yes': True, 'no': False}}\n"
+                        f"df[{field!r}] = df[{field!r}].map(lambda value: _mapping.get(str(value).strip().lower()) if pd.notna(value) else None).astype('boolean')"
+                    )
                 record_transformation(
                     result,
                     f"Convert {field} to {target_type}"
                     + (f" ({currency_code.strip()})" if target_type == "Currency" else ""),
+                    python_code=type_code,
                 )
                 currency_suffix = f" ({currency_code.strip()})" if target_type == "Currency" else ""
                 st.success(f"{field} converted to {target_type}{currency_suffix}.")
@@ -780,6 +870,15 @@ def render_outliers(df):
             record_transformation(
                 result,
                 f"{treatment} on {field}; IQR sensitivity {sensitivity}",
+                python_code=(
+                    f"_values = pd.to_numeric(df[{field!r}], errors='coerce').dropna()\n"
+                    "_q1, _q3 = _values.quantile(.25), _values.quantile(.75)\n"
+                    f"_lower, _upper = _q1 - {sensitivity!r} * (_q3 - _q1), _q3 + {sensitivity!r} * (_q3 - _q1)\n"
+                    + (f"df[{field!r}] = df[{field!r}].clip(lower=_lower, upper=_upper)"
+                       if treatment == "Cap values (winsorize)" else
+                       f"_values = pd.to_numeric(df[{field!r}], errors='coerce')\n"
+                       "df = df.loc[_values.between(_lower, _upper) | _values.isna()].reset_index(drop=True)")
+                ),
             )
             st.success("Outlier treatment applied.")
             st.rerun()
@@ -1065,6 +1164,116 @@ def _perform_clean_operation(data, operation, params):
     raise ValueError(f"Unsupported operation: {operation}")
 
 
+def _clean_operation_python_code(operation, params):
+    """Return an equivalent pandas code block for the selected clean action."""
+    column = params.get("column")
+    quoted_column = repr(column)
+    if operation == "Remove":
+        mode = params["remove_mode"]
+        if mode == "Columns":
+            return f"df = df.drop(columns={params['columns']!r})"
+        if mode == "Top Rows":
+            return f"df = df.iloc[{params['row_count']}:].reset_index(drop=True)"
+        if mode == "Bottom Rows":
+            return f"df = df.iloc[:-{params['row_count']} or None].reset_index(drop=True)"
+        if mode == "Blank Rows":
+            return "df = df.dropna(how='all').reset_index(drop=True)"
+    if operation == "Remove Other Columns":
+        return f"df = df[{params['columns']!r}].copy()"
+    if operation == "Duplicate Column":
+        return f"df[{params['new_name'].strip()!r}] = df[{quoted_column}].copy()"
+    if operation in ("Remove Errors", "Replace Errors"):
+        errors = list(_ERROR_TEXTS)
+        code = f"_error_mask = df[{quoted_column}].map(lambda value: isinstance(value, str) and value.strip().upper() in {errors!r})\n"
+        if operation == "Remove Errors":
+            return code + "df = df.loc[~_error_mask].reset_index(drop=True)"
+        return code + f"df.loc[_error_mask, {quoted_column}] = {params['replacement']!r}"
+    if operation == "Change Type":
+        kind = params["target_type"]
+        if kind == "Text":
+            return f"df[{quoted_column}] = df[{quoted_column}].astype('string')"
+        if kind in ("Decimal Number", "Fixed decimal number", "Whole Number", "Percentage"):
+            locale = params.get("locale", "en-US")
+            use_locale = params.get("use_locale", False)
+            thousands, decimal = {"en-US": (",", "."), "en-GB": (",", "."), "de-DE": (".", ","), "fr-FR": (" ", ","), "es-ES": (".", ","), "it-IT": (".", ",")}.get(locale, (",", ".")) if use_locale else (",", ".")
+            prep = f"_values = df[{quoted_column}].astype('string').str.strip()\n"
+            if kind == "Percentage":
+                prep += "_has_percent = _values.str.endswith('%', na=False)\n_values = _values.str.replace('%', '', regex=False)\n"
+            if thousands:
+                prep += f"_values = _values.str.replace({thousands!r}, '', regex=False)\n"
+            if decimal != ".":
+                prep += f"_values = _values.str.replace({decimal!r}, '.', regex=False)\n"
+            if kind == "Fixed decimal number":
+                prep += "from decimal import Decimal\ndf[" + quoted_column + "] = _values.map(lambda value: Decimal(str(value)) if pd.notna(value) else None)"
+            else:
+                prep += "_numbers = pd.to_numeric(_values, errors='raise')\n"
+                if kind == "Percentage":
+                    prep += "_numbers = _numbers.where(~_has_percent, _numbers / 100)\n"
+                if kind == "Whole Number":
+                    prep += "_numbers = _numbers.round().astype('Int64')\n"
+                prep += f"df[{quoted_column}] = _numbers"
+            return prep
+        if kind in ("Date/Time", "Date", "Date/Time/Timezone"):
+            return f"_dates = pd.to_datetime(df[{quoted_column}], errors='raise', utc={kind == 'Date/Time/Timezone'!r}, dayfirst={bool(params.get('use_locale') and params.get('locale') != 'en-US')!r})\n" + (f"df[{quoted_column}] = _dates.dt.date" if kind == "Date" else f"df[{quoted_column}] = _dates")
+        if kind == "Time":
+            return f"df[{quoted_column}] = pd.to_datetime(df[{quoted_column}], errors='raise').dt.time"
+        if kind == "Duration":
+            return f"df[{quoted_column}] = pd.to_timedelta(df[{quoted_column}], errors='raise')"
+        if kind == "True/False":
+            return f"_boolean_map = {{'true': True, 'false': False, '1': True, '0': False, 'yes': True, 'no': False}}\ndf[{quoted_column}] = df[{quoted_column}].map(lambda value: _boolean_map.get(str(value).strip().lower()) if pd.notna(value) else pd.NA).astype('boolean')"
+        if kind == "Binary":
+            return f"df[{quoted_column}] = df[{quoted_column}].map(lambda value: str(value).encode('utf-8') if pd.notna(value) else None)"
+    if operation == "Transform":
+        transform = params["transform"]
+        if transform in ("lowercase", "UPPERCASE", "Capitalize Each Word", "Trim", "Length", "Clean"):
+            method = {"lowercase": "lower", "UPPERCASE": "upper", "Capitalize Each Word": "title", "Trim": "strip", "Length": "len"}.get(transform)
+            if method:
+                return f"df[{quoted_column}] = df[{quoted_column}].astype('string').str.{method}()"
+            return f"df[{quoted_column}] = df[{quoted_column}].astype('string').str.replace(r'[\\x00-\\x1f\\x7f]', '', regex=True)"
+        if transform in ("JSON", "XML"):
+            import_name = "json" if transform == "JSON" else "xml.etree.ElementTree as ET"
+            parser = "json.loads" if transform == "JSON" else "ET.fromstring"
+            return f"import {import_name}\ndf[{quoted_column}] = df[{quoted_column}].map(lambda value: {parser}(value) if isinstance(value, str) and value.strip() else value)"
+        if transform == "Extract":
+            method = params["extract_operation"]
+            if method == "By Delimiter":
+                expression = f".str.split({params['delimiter']!r}).str[{params['delimiter_position'] - 1}]"
+            elif method == "By Number of Characters":
+                count = params["character_count"]
+                expression = f".str[:{count}]" if params["character_side"] == "From start" else f".str[-{count}:]" if count else ".str[:0]"
+            elif method in ("First Characters", "Last Characters"):
+                count = params["character_count"]
+                expression = f".str[:{count}]" if method == "First Characters" else f".str[-{count}:]" if count else ".str[:0]"
+            elif method == "By Positions":
+                start, count = params["position_start"], params["position_count"]
+                expression = f".str[{start}:{start + count}]"
+            elif method == "Range":
+                start, count = params["range_start"] - 1, params["range_count"]
+                expression = f".str[{start}:{start + count}]"
+            elif method == "Length":
+                expression = ".str.len().astype('Int64')"
+            elif method == "Text Before Delimiter":
+                expression = f".str.split({params['delimiter']!r}, n=1).str[0]"
+            elif method == "Text After Delimiter":
+                expression = f".str.split({params['delimiter']!r}, n=1).str[1].fillna('')"
+            else:
+                start, end = params["start_delimiter"], params["end_delimiter"]
+                return f"_text = df[{quoted_column}].astype('string')\ndf[{quoted_column}] = _text.map(lambda value: value[value.find({start!r}) + len({start!r}):value.find({end!r}, value.find({start!r}) + len({start!r}))] if pd.notna(value) and value.find({start!r}) >= 0 and value.find({end!r}, value.find({start!r}) + len({start!r})) >= 0 else '')"
+            return f"df[{quoted_column}] = df[{quoted_column}].astype('string'){expression}"
+    if operation == "Replace Values":
+        return f"df[{quoted_column}] = df[{quoted_column}].map(lambda value: {params['replace_value']!r} if pd.notna(value) and str(value) == {params['find_value']!r} else value)"
+    if operation == "Split Column":
+        delimiter = params["delimiter"]
+        return f"_parts = df[{quoted_column}].astype('string').str.split({delimiter!r}, expand=True)\n_names = [{column!r} + '.' + str(index + 1) for index in range(_parts.shape[1])]\ndf = df.drop(columns=[{column!r}]).join(_parts.set_axis(_names, axis=1))"
+    if operation == "Fill":
+        mode = params["fill_mode"]
+        method = "ffill" if mode == "Down" else "bfill" if mode == "Up" else None
+        return f"df[{quoted_column}] = df[{quoted_column}].{method}()" if method else f"df[{quoted_column}] = df[{quoted_column}].fillna({params['fill_value']!r})"
+    if operation == "Rename":
+        return f"df = df.rename(columns={{{quoted_column}: {params['new_name'].strip()!r}}})"
+    raise ValueError(f"No Python export implementation for {operation}.")
+
+
 def render_clean_operations(df):
     st.markdown("#### Column and row operations")
     operation = st.selectbox("Choose an operation", _CLEAN_OPERATIONS, key="clean_operation")
@@ -1168,7 +1377,11 @@ def render_clean_operations(df):
                     else target_type if operation == "Change Type"
                     else operation
                 )
-                record_transformation(result, f"{detail} — {params.get('column', '')}".rstrip(" —"))
+                record_transformation(
+                    result,
+                    f"{detail} — {params.get('column', '')}".rstrip(" —"),
+                    python_code=_clean_operation_python_code(operation, params),
+                )
                 st.success(f"{detail} applied.")
                 st.rerun()
         except Exception as error:
@@ -1211,7 +1424,31 @@ def render_clean_tab(df):
             if preview_df.equals(current_df):
                 st.info("No cleanup changes to apply.")
             else:
-                record_transformation(preview_df, "Apply quick cleanup")
+                quick_cleanup_code = []
+                if trim_whitespace:
+                    quick_cleanup_code.extend([
+                        "for column in df.select_dtypes(include=['object', 'string']).columns:",
+                        "    df[column] = df[column].map(lambda value: value.strip() if isinstance(value, str) else value)",
+                    ])
+                if fill_missing:
+                    quick_cleanup_code.extend([
+                        "for column in df.columns:",
+                        "    series = df[column]",
+                        "    if not series.isna().any(): continue",
+                        "    if " + repr(fill_strategy) + " == 'Median' and pd.api.types.is_numeric_dtype(series):",
+                        "        value = series.median()",
+                        "    else:",
+                        "        modes = series.mode(dropna=True)",
+                        "        value = modes.iloc[0] if not modes.empty else None",
+                        "    if value is not None and not pd.isna(value): df[column] = series.fillna(value)",
+                    ])
+                if remove_duplicates:
+                    quick_cleanup_code.append("df = df.drop_duplicates()")
+                quick_cleanup_code.append("df = df.reset_index(drop=True)")
+                record_transformation(
+                    preview_df, "Apply quick cleanup",
+                    python_code="\n".join(quick_cleanup_code),
+                )
                 st.success("Cleanup applied to the working dataset.")
                 st.rerun()
     with reset_col:
@@ -1222,7 +1459,10 @@ def render_clean_tab(df):
             elif original_df.equals(current_df):
                 st.info("The working dataset already matches the original upload.")
             else:
-                record_transformation(original_df, "Reset dataset to original upload")
+                record_transformation(
+                    original_df, "Reset dataset to original upload",
+                    python_code="df = original_df.copy(deep=True)",
+                )
                 st.success("Restored the original uploaded dataset.")
                 st.rerun()
     with st.expander("Preview the first 20 rows after cleanup"):
@@ -1351,6 +1591,16 @@ def render_filter_rows(df):
                 record_transformation(
                     result,
                     f"Filter rows: {field} {condition.lower()} {value}",
+                    python_code=(
+                        f"_series = df[{field!r}]\n"
+                        + ("_mask = _series.isna()" if condition == "Is missing" else
+                           "_mask = _series.notna()" if condition == "Is not missing" else
+                           f"_numeric = pd.to_numeric(_series, errors='coerce')\n_mask = _numeric {'>' if condition == 'Greater than' else '>=' if condition == 'Greater than or equal to' else '<' if condition == 'Less than' else '<='} {float(value)!r}" if condition in ("Greater than", "Greater than or equal to", "Less than", "Less than or equal to") else
+                           f"_mask = _series.astype(str) {'==' if condition == 'Equals' else '!='} {value!r}" if condition in ("Equals", "Does not equal") else
+                           f"_mask = _series.astype(str).str.contains({value!r}, case=False, na=False)" if condition == "Contains" else
+                           f"_mask = ~_series.astype(str).str.contains({value!r}, case=False, na=False)")
+                        + "\ndf = df.loc[_mask].reset_index(drop=True)"
+                    ),
                 )
 
                 st.success(
@@ -1431,6 +1681,12 @@ def render_calculated_field(df):
         record_transformation(
             result,
             f"Create {new_name}: {first_field} {calculation} {second_field}",
+            python_code=(
+                f"_a = pd.to_numeric(df[{first_field!r}], errors='coerce')\n"
+                f"_b = pd.to_numeric(df[{second_field!r}], errors='coerce')\n"
+                f"df[{new_name.strip()!r}] = "
+                + ("_a + _b" if calculation == "Add" else "_a - _b" if calculation == "Subtract" else "_a * _b" if calculation == "Multiply" else "_a.div(_b.replace(0, pd.NA))")
+            ),
         )
 
         st.success(f"Created {new_name}.")
@@ -1500,6 +1756,11 @@ def render_group_summarize(df):
             result,
             f"Group by {', '.join(group_fields)}; "
             f"{aggregation} of {value_field}",
+            python_code=(
+                f"_functions = {{'Sum': 'sum', 'Mean': 'mean', 'Median': 'median', 'Count': 'count', 'Minimum': 'min', 'Maximum': 'max'}}\n"
+                f"df = df.groupby({group_fields!r}, dropna=False)[{value_field!r}].agg(_functions[{aggregation!r}]).reset_index()\n"
+                f"df = df.rename(columns={{{value_field!r}: {f'{aggregation} of {value_field}'!r}}})"
+            ),
         )
 
         st.success("Grouped summary created.")
@@ -1570,6 +1831,11 @@ def render_pivot(df):
             record_transformation(
                 result,
                 f"Pivot {values_field} by {index_field} and {columns_field}",
+                python_code=(
+                    f"_functions = {{'Sum': 'sum', 'Mean': 'mean', 'Count': 'count'}}\n"
+                    f"df = pd.pivot_table(df, index={index_field!r}, columns={columns_field!r}, values={values_field!r}, aggfunc=_functions[{aggregation!r}]).reset_index()\n"
+                    "df.columns.name = None"
+                ),
             )
 
             st.success("Pivot table created.")
@@ -1624,6 +1890,11 @@ def render_reshape(df):
         record_transformation(
             result,
             f"Reshape wide to long; retain {', '.join(identifier_fields)}",
+            python_code=(
+                f"_id_fields = {identifier_fields!r}\n"
+                "_value_fields = [column for column in df.columns if column not in _id_fields]\n"
+                "df = pd.melt(df, id_vars=_id_fields, value_vars=_value_fields, var_name='Variable', value_name='Value')"
+            ),
         )
 
         st.success("Dataset reshaped.")
@@ -1778,6 +2049,12 @@ def render_join(df):
                 result,
                 f"{join_type} join with {uploaded_file.name} "
                 f"using {left_key} = {right_key}",
+                python_code=(
+                    "import base64, io\n"
+                    f"_joined_csv = {base64.b64encode(second_df.to_csv(index=False).encode('utf-8')).decode('ascii')!r}\n"
+                    "_joined_df = pd.read_csv(io.BytesIO(base64.b64decode(_joined_csv)))\n"
+                    f"df = pd.merge(df, _joined_df, left_on={left_key!r}, right_on={right_key!r}, how={join_type.lower()!r}, suffixes=('', '_joined'))"
+                ),
             )
 
             st.success(
@@ -1861,6 +2138,15 @@ def render_union(df):
         record_transformation(
             result,
             f"Union with {uploaded_file.name}",
+            python_code=(
+                "import base64, io\n"
+                f"_append_csv = {base64.b64encode(second_df.to_csv(index=False).encode('utf-8')).decode('ascii')!r}\n"
+                "_append_df = pd.read_csv(io.BytesIO(base64.b64decode(_append_csv)))\n"
+                + ("df = pd.concat([df, _append_df], ignore_index=True, sort=False)"
+                   if include_all_columns else
+                   f"_shared_fields = {[column for column in df.columns if column in second_df.columns]!r}\n"
+                   "df = pd.concat([df[_shared_fields], _append_df[_shared_fields]], ignore_index=True)")
+            ),
         )
 
         st.success(
