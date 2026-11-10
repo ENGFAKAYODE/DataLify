@@ -645,7 +645,7 @@ def load_styles() -> None:
         body .stApp [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
             border-bottom: 0 !important;
         }
-        /* Streamlit 1.5x renders tab labels with React Aria's stTab test id. */
+        /* Streamlit's React Aria tab structure uses stTab elements. */
         body .stApp [data-testid="stTabs"] [data-testid="stTab"] {
             --indicator-color: transparent !important;
             border-bottom-color: transparent !important;
