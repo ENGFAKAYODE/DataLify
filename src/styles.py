@@ -8,6 +8,7 @@ def load_styles() -> None:
         """
         <style>
         :root {
+            --st-primary-color: #356AE6 !important;
             --dl-ink: #17243B;
             --dl-muted: #64748B;
             --dl-blue: #356AE6;
@@ -20,6 +21,7 @@ def load_styles() -> None:
         }
 
         .stApp {
+            --st-primary-color: #356AE6 !important;
             background:
                 radial-gradient(ellipse at 90% 0%, rgba(83, 126, 232, .075), transparent 32rem),
                 var(--dl-canvas);
@@ -632,14 +634,32 @@ def load_styles() -> None:
         /* Streamlit's red tab underline is unnecessary with our filled selected tabs. */
         body .stApp [data-testid="stTabs"] [data-baseweb="tab-highlight"],
         body .stApp [data-testid="stTabs"] [data-baseweb="tab-border"],
+        body .stApp [data-testid="stTabs"] [role="tablist"]::before,
+        body .stApp [data-testid="stTabs"] [role="tablist"]::after,
         body .stApp [data-testid="stTabs"] [role="tab"]::before,
         body .stApp [data-testid="stTabs"] [role="tab"]::after {
             display: none !important;
+        }
+        body .stApp [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+            border-bottom: 0 !important;
+        }
+        /* Reinforce the theme color on filter widgets with their own rendered marks. */
+        body .stApp [data-testid="stSlider"] [role="slider"] {
             background-color: #356AE6 !important;
             border-color: #356AE6 !important;
         }
-        body .stApp [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
-            border-bottom-color: #2857BE !important;
+        body .stApp [data-testid="stMultiSelect"] [data-baseweb="tag"] {
+            background-color: #356AE6 !important;
+        }
+        body .stApp [data-testid="stMultiSelect"] [role="option"][aria-selected="true"] {
+            color: #234DA5 !important;
+            background-color: #EAF0FF !important;
+        }
+        body .stApp [data-testid="stCheckbox"] [role="checkbox"][aria-checked="true"],
+        body .stApp [data-testid="stCheckbox"] input:checked + div {
+            color: #356AE6 !important;
+            background-color: #356AE6 !important;
+            border-color: #356AE6 !important;
         }
         @media (max-height: 800px) {
             [data-testid="stSidebar"] [data-testid="stButton"] button {
