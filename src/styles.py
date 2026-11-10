@@ -662,13 +662,20 @@ def load_styles() -> None:
             box-shadow: none !important;
         }
         /* Reinforce the theme color on filter widgets with their own rendered marks. */
-        body .stApp [data-testid="stSlider"] [role="slider"],
-        body .stApp [data-testid="stSlider"] [data-testid*="Thumb"] {
-            background-color: #356AE6 !important;
-            border-color: #356AE6 !important;
+        /* Scope the primary token to these widgets, not their surrounding fields. */
+        body .stApp [data-testid="stSlider"],
+        body .stApp [data-testid="stMultiSelect"],
+        body .stApp [data-testid="stCheckbox"] {
+            --primary-color: #356AE6 !important;
+            --st-primary-color: #356AE6 !important;
         }
-        body .stApp [data-testid="stSlider"] [data-testid*="TrackFill"],
-        body .stApp [data-testid="stSlider"] [data-testid*="trackFill"] {
+        /* Keep the slider's value bubble neutral; color only the rail and thumb edge. */
+        body .stApp [data-testid="stSlider"] [role="slider"] {
+            background-color: #FFFFFF !important;
+            border-color: #356AE6 !important;
+            box-shadow: 0 0 0 2px rgba(53, 106, 230, .16) !important;
+        }
+        body .stApp [data-testid="stSlider"] [data-testid="stSliderTrackFill"] {
             background-color: #356AE6 !important;
             border-color: #356AE6 !important;
         }
@@ -684,18 +691,15 @@ def load_styles() -> None:
             background-color: #EAF0FF !important;
         }
         body .stApp [data-testid="stCheckbox"] [role="checkbox"][aria-checked="true"],
-        body .stApp [data-testid="stCheckbox"] input:checked + div,
-        body .stApp [data-testid="stCheckbox"] input:checked,
-        body .stApp [data-testid="stCheckbox"] [role="checkbox"][data-state="checked"] {
+        body .stApp [data-testid="stCheckbox"] [role="checkbox"][data-state="checked"],
+        body .stApp [data-testid="stCheckbox"] label:has(input[type="checkbox"]:checked) [data-baseweb="checkbox"] > div {
             color: #356AE6 !important;
             background-color: #356AE6 !important;
             border-color: #356AE6 !important;
         }
-        body .stApp [data-testid="stCheckbox"] input,
-        body .stApp [data-testid="stSlider"] input {
+        body .stApp [data-testid="stCheckbox"] input[type="checkbox"] {
             accent-color: #356AE6 !important;
         }
-        body .stApp [data-testid="stCheckbox"] [data-baseweb="checkbox"] > div,
         body .stApp [data-testid="stCheckbox"] [role="checkbox"][aria-checked="true"] > div {
             background-color: #356AE6 !important;
             border-color: #356AE6 !important;
