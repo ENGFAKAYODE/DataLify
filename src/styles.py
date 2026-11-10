@@ -588,7 +588,7 @@ def load_styles() -> None:
         /* Keep tab corners consistent across default, active, and hover states. */
         [data-testid="stTabs"] [role="tab"],
         [data-testid="stTabs"] [data-baseweb="tab"] {
-            border-radius: 4.25px !important;
+            border-radius: 3.4px !important;
         }
         /* Prepare form submit controls stay readable on their blue primary fill. */
         [data-testid="stFormSubmitButton"] button[kind="primary"],

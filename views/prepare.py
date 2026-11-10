@@ -830,9 +830,358 @@ def _build_quick_clean_preview(data, remove_duplicates, trim_whitespace, fill_mi
     return result.reset_index(drop=True)
 
 
+_CLEAN_OPERATIONS = [
+    "Remove", "Remove Other Columns", "Duplicate Column", "Remove Errors",
+    "Change Type", "Transform", "Replace Values", "Replace Errors",
+    "Split Column", "Fill", "Rename",
+]
+_TRANSFORM_OPERATIONS = [
+    "lowercase", "UPPERCASE", "Capitalize Each Word", "Trim", "Clean",
+    "Length", "JSON", "XML", "Extract",
+]
+_EXTRACT_OPERATIONS = [
+    "By Delimiter", "By Number of Characters", "By Positions", "Length",
+    "First Characters", "Last Characters", "Range", "Text Before Delimiter",
+    "Text After Delimiter", "Text Between Delimiters",
+]
+_CLEAN_TYPES = [
+    "Decimal Number", "Fixed decimal number", "Whole Number", "Percentage",
+    "Date/Time", "Date", "Time", "Date/Time/Timezone", "Duration", "Text",
+    "True/False", "Binary", "Using Locale ...",
+]
+_ERROR_TEXTS = ("#REF!", "#VALUE!", "#DIV/0!", "#N/A", "#NAME?", "#NUM!", "#NULL!")
+
+
+def _is_error_value(value):
+    return isinstance(value, str) and value.strip().upper() in _ERROR_TEXTS
+
+
+def _apply_clean_type(series, target_type, locale_name="en-US", use_locale=False):
+    if target_type == "Text":
+        return series.astype("string")
+    if target_type in ("Decimal Number", "Fixed decimal number", "Whole Number", "Percentage"):
+        values = series.astype("string").str.strip()
+        if target_type == "Percentage":
+            has_percent = values.str.endswith("%", na=False)
+            values = values.str.replace("%", "", regex=False)
+            if use_locale:
+                separators = {
+                    "en-US": (",", "."), "en-GB": (",", "."),
+                    "de-DE": (".", ","), "fr-FR": (" ", ","),
+                    "es-ES": (".", ","), "it-IT": (".", ","),
+                }
+                thousands, decimal = separators[locale_name]
+                if thousands:
+                    values = values.str.replace(thousands, "", regex=False)
+                if decimal != ".":
+                    values = values.str.replace(decimal, ".", regex=False)
+            numbers = pd.to_numeric(values, errors="raise")
+            return numbers.where(~has_percent, numbers / 100)
+        if use_locale:
+            separators = {
+                "en-US": (",", "."), "en-GB": (",", "."),
+                "de-DE": (".", ","), "fr-FR": (" ", ","),
+                "es-ES": (".", ","), "it-IT": (".", ","),
+            }
+            thousands, decimal = separators[locale_name]
+            if thousands:
+                values = values.str.replace(thousands, "", regex=False)
+            if decimal != ".":
+                values = values.str.replace(decimal, ".", regex=False)
+        else:
+            values = values.str.replace(",", "", regex=False)
+        if target_type == "Fixed decimal number":
+            from decimal import Decimal
+            return values.map(lambda value: Decimal(str(value)) if pd.notna(value) else None)
+        numbers = pd.to_numeric(values, errors="raise")
+        if target_type == "Whole Number":
+            return numbers.round().astype("Int64")
+        return numbers
+    if target_type in ("Date/Time", "Date", "Date/Time/Timezone"):
+        dates = pd.to_datetime(
+            series, errors="raise", utc=(target_type == "Date/Time/Timezone"),
+            dayfirst=(use_locale and locale_name != "en-US" and target_type != "Date/Time/Timezone"),
+        )
+        if target_type == "Date":
+            return dates.dt.date
+        return dates
+    if target_type == "Time":
+        return pd.to_datetime(series, errors="raise").dt.time
+    if target_type == "Duration":
+        return pd.to_timedelta(series, errors="raise")
+    if target_type == "True/False":
+        mapping = {"true": True, "false": False, "1": True, "0": False, "yes": True, "no": False}
+        converted = series.map(lambda value: mapping.get(str(value).strip().lower()) if pd.notna(value) else pd.NA)
+        invalid = series.notna() & converted.isna()
+        if invalid.any():
+            raise ValueError("Values must be true/false, yes/no, or 1/0.")
+        return converted.astype("boolean")
+    if target_type == "Binary":
+        return series.map(lambda value: str(value).encode("utf-8") if pd.notna(value) else None)
+    raise ValueError(f"Unsupported type: {target_type}")
+
+
+def _apply_text_transform(series, operation):
+    text = series.astype("string")
+    if operation == "lowercase":
+        return text.str.lower()
+    if operation == "UPPERCASE":
+        return text.str.upper()
+    if operation == "Capitalize Each Word":
+        return text.str.title()
+    if operation == "Trim":
+        return text.str.strip()
+    if operation == "Clean":
+        return text.str.replace(r"[\x00-\x1f\x7f]", "", regex=True)
+    if operation == "Length":
+        return text.str.len().astype("Int64")
+    if operation == "JSON":
+        return series.map(lambda value: json.loads(value) if isinstance(value, str) and value.strip() else value)
+    if operation == "XML":
+        import xml.etree.ElementTree as ET
+        return series.map(lambda value: ET.fromstring(value) if isinstance(value, str) and value.strip() else value)
+    raise ValueError(f"Unsupported transform: {operation}")
+
+
+def _apply_text_extract(series, method, params):
+    text = series.astype("string")
+
+    def extract(value):
+        if pd.isna(value):
+            return pd.NA
+        if method == "By Delimiter":
+            pieces = value.split(params["delimiter"])
+            position = params["delimiter_position"]
+            return pieces[position - 1] if position <= len(pieces) else ""
+        if method == "By Number of Characters":
+            count = params["character_count"]
+            return value[:count] if params["character_side"] == "From start" else value[-count:] if count else ""
+        if method == "By Positions":
+            start = params["position_start"]
+            return value[start:start + params["position_count"]]
+        if method == "Length":
+            return len(value)
+        if method == "First Characters":
+            return value[:params["character_count"]]
+        if method == "Last Characters":
+            count = params["character_count"]
+            return value[-count:] if count else ""
+        if method == "Range":
+            start = params["range_start"] - 1
+            return value[start:start + params["range_count"]]
+        if method == "Text Before Delimiter":
+            delimiter = params["delimiter"]
+            return value.split(delimiter, 1)[0]
+        if method == "Text After Delimiter":
+            delimiter = params["delimiter"]
+            return value.split(delimiter, 1)[1] if delimiter in value else ""
+        if method == "Text Between Delimiters":
+            start_delimiter = params["start_delimiter"]
+            end_delimiter = params["end_delimiter"]
+            start_at = value.find(start_delimiter)
+            if start_at < 0:
+                return ""
+            start_at += len(start_delimiter)
+            end_at = value.find(end_delimiter, start_at)
+            return value[start_at:end_at] if end_at >= 0 else ""
+        raise ValueError(f"Unsupported extract method: {method}")
+
+    extracted = text.map(extract)
+    return extracted.astype("Int64") if method == "Length" else extracted
+
+
+def _perform_clean_operation(data, operation, params):
+    result = data.copy(deep=True)
+    column = params.get("column")
+    if operation == "Remove":
+        mode = params["remove_mode"]
+        if mode == "Columns":
+            return result.drop(columns=params["columns"])
+        if mode == "Top Rows":
+            return result.iloc[params["row_count"]:].reset_index(drop=True)
+        if mode == "Bottom Rows":
+            return result.iloc[:-params["row_count"] or None].reset_index(drop=True)
+        if mode == "Blank Rows":
+            return result.dropna(how="all").reset_index(drop=True)
+        return result.drop_duplicates().reset_index(drop=True)
+    if operation == "Remove Other Columns":
+        return result[params["columns"]].copy()
+    if operation == "Duplicate Column":
+        new_name = params["new_name"].strip()
+        if not new_name or new_name in result.columns:
+            raise ValueError("Enter a new column name that is not already in use.")
+        result[new_name] = result[column].copy()
+        return result
+    if operation in ("Remove Errors", "Replace Errors"):
+        error_mask = result[column].map(_is_error_value)
+        if operation == "Remove Errors":
+            return result.loc[~error_mask].reset_index(drop=True)
+        result.loc[error_mask, column] = params["replacement"]
+        return result
+    if operation == "Change Type":
+        result[column] = _apply_clean_type(
+            result[column], params["target_type"], params.get("locale", "en-US"),
+            params.get("use_locale", False),
+        )
+        return result
+    if operation == "Transform":
+        if params.get("transform") == "Extract":
+            result[column] = _apply_text_extract(
+                result[column], params["extract_operation"], params,
+            )
+            return result
+        result[column] = _apply_text_transform(result[column], params["transform"])
+        return result
+    if operation == "Replace Values":
+        target = params["find_value"]
+        replacement = params["replace_value"]
+        result[column] = result[column].map(lambda value: replacement if pd.notna(value) and str(value) == target else value)
+        return result
+    if operation == "Split Column":
+        delimiter = params["delimiter"]
+        if not delimiter:
+            raise ValueError("Enter a delimiter to split on.")
+        parts = result[column].astype("string").str.split(delimiter, expand=True)
+        names = [f"{column}.{index + 1}" for index in range(parts.shape[1])]
+        conflicts = set(names) & (set(result.columns) - {column})
+        if conflicts:
+            raise ValueError(f"Split column names already exist: {', '.join(sorted(conflicts))}.")
+        result = result.drop(columns=[column]).join(parts.set_axis(names, axis=1))
+        return result
+    if operation == "Fill":
+        mode = params["fill_mode"]
+        if mode == "Down":
+            result[column] = result[column].ffill()
+        elif mode == "Up":
+            result[column] = result[column].bfill()
+        else:
+            result[column] = result[column].fillna(params["fill_value"])
+        return result
+    if operation == "Rename":
+        new_name = params["new_name"].strip()
+        if not new_name or (new_name in result.columns and new_name != column):
+            raise ValueError("Enter a non-empty column name that is not already in use.")
+        return result.rename(columns={column: new_name})
+    raise ValueError(f"Unsupported operation: {operation}")
+
+
+def render_clean_operations(df):
+    st.markdown("#### Column and row operations")
+    operation = st.selectbox("Choose an operation", _CLEAN_OPERATIONS, key="clean_operation")
+    transform = None
+    extract_operation = None
+    target_type = None
+    if operation == "Transform":
+        transform = st.selectbox("Transform", _TRANSFORM_OPERATIONS, key="clean_transform")
+        if transform == "Extract":
+            extract_operation = st.selectbox("Extract", _EXTRACT_OPERATIONS, key="clean_extract_operation")
+    elif operation == "Change Type":
+        target_type = st.selectbox("Change type to", _CLEAN_TYPES, key="clean_target_type")
+
+    columns = df.columns.tolist()
+    params = {}
+    with st.form("clean_operation_form"):
+        if operation == "Remove":
+            params["remove_mode"] = st.selectbox("Remove", ["Columns", "Top Rows", "Bottom Rows", "Blank Rows"], key="clean_remove_mode")
+            if params["remove_mode"] == "Columns":
+                params["columns"] = st.multiselect("Columns to remove", columns, key="clean_remove_columns")
+            elif params["remove_mode"] in ("Top Rows", "Bottom Rows"):
+                params["row_count"] = st.number_input("Number of rows", min_value=1, max_value=max(1, len(df)), value=1, key="clean_remove_row_count")
+        elif operation == "Remove Other Columns":
+            params["columns"] = st.multiselect("Keep these columns", columns, key="clean_keep_columns")
+        elif operation in ("Duplicate Column", "Change Type", "Transform", "Remove Errors", "Replace Errors", "Replace Values", "Split Column", "Fill", "Rename"):
+            params["column"] = st.selectbox("Column", columns, key="clean_operation_column")
+            if operation == "Duplicate Column":
+                params["new_name"] = st.text_input("New column name", key="clean_duplicate_name")
+            elif operation == "Rename":
+                params["new_name"] = st.text_input("New column name", value=str(params["column"]), key="clean_rename_name")
+            elif operation == "Change Type":
+                params["target_type"] = target_type
+                if target_type == "Using Locale ...":
+                    params["use_locale"] = True
+                    params["locale"] = st.selectbox("Locale", ["en-US", "en-GB", "de-DE", "fr-FR", "es-ES", "it-IT"], key="clean_type_locale")
+                    params["target_type"] = st.selectbox(
+                        "Data type",
+                        ["Decimal Number", "Fixed decimal number", "Whole Number", "Percentage", "Date/Time", "Date"],
+                        key="clean_type_locale_target",
+                    )
+            elif operation == "Transform":
+                params["transform"] = transform
+                if transform == "Extract":
+                    params["extract_operation"] = extract_operation
+                    if extract_operation == "By Delimiter":
+                        params["delimiter"] = st.text_input("Delimiter", key="clean_extract_delimiter")
+                        params["delimiter_position"] = st.number_input("Delimited section number", min_value=1, value=1, key="clean_extract_delimiter_position")
+                    elif extract_operation == "By Number of Characters":
+                        params["character_count"] = st.number_input("Number of characters", min_value=0, value=1, key="clean_extract_character_count")
+                        params["character_side"] = st.selectbox("Take characters from", ["From start", "From end"], key="clean_extract_character_side")
+                    elif extract_operation == "By Positions":
+                        params["position_start"] = st.number_input("Start position (0-based)", min_value=0, value=0, key="clean_extract_position_start")
+                        params["position_count"] = st.number_input("Number of characters", min_value=0, value=1, key="clean_extract_position_count")
+                    elif extract_operation in ("First Characters", "Last Characters"):
+                        params["character_count"] = st.number_input("Number of characters", min_value=0, value=1, key="clean_extract_character_count")
+                    elif extract_operation == "Range":
+                        params["range_start"] = st.number_input("Start position (1-based)", min_value=1, value=1, key="clean_extract_range_start")
+                        params["range_count"] = st.number_input("Number of characters", min_value=0, value=1, key="clean_extract_range_count")
+                    elif extract_operation in ("Text Before Delimiter", "Text After Delimiter"):
+                        params["delimiter"] = st.text_input("Delimiter", key="clean_extract_delimiter")
+                    elif extract_operation == "Text Between Delimiters":
+                        params["start_delimiter"] = st.text_input("Start delimiter", key="clean_extract_start_delimiter")
+                        params["end_delimiter"] = st.text_input("End delimiter", key="clean_extract_end_delimiter")
+            elif operation == "Replace Values":
+                params["find_value"] = st.text_input("Value to find", key="clean_find_value")
+                params["replace_value"] = st.text_input("Replace with", key="clean_replace_value")
+            elif operation == "Replace Errors":
+                params["replacement"] = st.text_input("Replace errors with", key="clean_replace_errors")
+            elif operation == "Split Column":
+                params["delimiter"] = st.text_input("Delimiter", value=",", key="clean_split_delimiter")
+            elif operation == "Fill":
+                params["fill_mode"] = st.selectbox("Fill", ["Down", "Up", "With a value"], key="clean_fill_mode")
+                if params["fill_mode"] == "With a value":
+                    params["fill_value"] = st.text_input("Value", key="clean_fill_value")
+        submitted = st.form_submit_button(operation, type="primary", width="stretch")
+
+    if submitted:
+        try:
+            if operation == "Remove Other Columns" and not params["columns"]:
+                raise ValueError("Choose at least one column to keep.")
+            if operation == "Remove" and params["remove_mode"] == "Columns" and not params["columns"]:
+                raise ValueError("Choose at least one column to remove.")
+            if operation == "Remove" and params["remove_mode"] == "Columns" and len(params["columns"]) == len(columns):
+                raise ValueError("At least one column must remain in the dataset.")
+            if operation == "Transform" and transform == "Extract":
+                required_delimiters = {
+                    "By Delimiter": ("delimiter",),
+                    "Text Before Delimiter": ("delimiter",),
+                    "Text After Delimiter": ("delimiter",),
+                    "Text Between Delimiters": ("start_delimiter", "end_delimiter"),
+                }.get(extract_operation, ())
+                if any(not params[name] for name in required_delimiters):
+                    raise ValueError("Enter all required delimiter values.")
+            result = _perform_clean_operation(df, operation, params)
+            if result.equals(df):
+                st.info("No changes were necessary.")
+            else:
+                detail = (
+                    extract_operation if operation == "Transform" and transform == "Extract"
+                    else transform if operation == "Transform"
+                    else target_type if operation == "Change Type"
+                    else operation
+                )
+                record_transformation(result, f"{detail} — {params.get('column', '')}".rstrip(" —"))
+                st.success(f"{detail} applied.")
+                st.rerun()
+        except Exception as error:
+            st.error(f"Could not apply {operation.lower()}: {error}")
+
+
 def render_clean_tab(df):
     st.markdown("### Clean your dataset")
-    st.caption("Preview a quick cleanup, then apply it, or use targeted tools for individual fields.")
+    st.caption("Clean and transform rows or columns while keeping the original upload untouched.")
+
+    render_clean_operations(df)
+
+    st.divider()
 
     st.markdown("#### Quick cleanup preview")
     remove_duplicates = st.checkbox("Remove duplicate rows", value=True, key="clean_preview_duplicates")
@@ -894,16 +1243,7 @@ def render_clean_tab(df):
 
     st.markdown('<div class="prep-divider"></div>', unsafe_allow_html=True)
 
-    type_col, outlier_col = st.columns(
-        2,
-        gap="large",
-    )
-
-    with type_col:
-        render_field_types(df)
-
-    with outlier_col:
-        render_outliers(df)
+    render_outliers(df)
 
 
 # =========================================================
