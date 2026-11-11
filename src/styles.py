@@ -707,6 +707,20 @@ def load_styles() -> None:
         body .stApp [data-testid="stCheckbox"] svg {
             fill: #FFFFFF !important;
         }
+        /* Keep workspace tabs, cleanup checkboxes, and field filters free of
+           browser/Streamlit underline decorations. */
+        body .stApp .st-key-quality_lab_tabs [data-testid="stTabs"] *,
+        body .stApp .st-key-prepare_workspace_tabs [data-testid="stTabs"] *,
+        body .stApp [data-testid="stCheckbox"] label,
+        body .stApp [data-testid="stCheckbox"] label span,
+        body .stApp [data-testid="stMultiSelect"] [data-baseweb="select"],
+        body .stApp [data-testid="stMultiSelect"] [data-baseweb="tag"] {
+            text-decoration: none !important;
+        }
+        body .stApp .st-key-quality_lab_tabs [data-testid="stTabs"] [data-testid*="indicator"],
+        body .stApp .st-key-prepare_workspace_tabs [data-testid="stTabs"] [data-testid*="indicator"] {
+            display: none !important;
+        }
         @media (max-height: 800px) {
             [data-testid="stSidebar"] [data-testid="stButton"] button {
                 min-height: 1.78rem !important; padding-top: .14rem !important; padding-bottom: .14rem !important;
