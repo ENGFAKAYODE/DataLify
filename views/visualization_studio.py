@@ -759,6 +759,7 @@ def render_visualization_studio():
             if st.button(
                 "＋ Add filter",
                 width="stretch",
+                type="primary",
                 key="viz_add_filter",
             ):
                 st.session_state.viz_filter_count += 1
