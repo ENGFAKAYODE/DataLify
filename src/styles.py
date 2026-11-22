@@ -631,6 +631,22 @@ def load_styles() -> None:
             background-color: #2454C6 !important;
             border-color: #2454C6 !important;
         }
+        /* Keep the Visualization Studio's Add filter action visibly blue. */
+        body .stApp .st-key-viz_add_filter button {
+            background-color: #356AE6 !important;
+            background-image: none !important;
+            border-color: #356AE6 !important;
+            color: #FFFFFF !important;
+        }
+        body .stApp .st-key-viz_add_filter button * {
+            color: #FFFFFF !important;
+            -webkit-text-fill-color: #FFFFFF !important;
+            fill: #FFFFFF !important;
+        }
+        body .stApp .st-key-viz_add_filter button:hover {
+            background-color: #2454C6 !important;
+            border-color: #2454C6 !important;
+        }
         /* Explicit blue tab indicators override Streamlit's red primary color. */
         body .stApp [data-testid="stTabs"] [data-baseweb="tab-highlight"],
         body .stApp [data-testid="stTabs"] [data-testid*="indicator"],
