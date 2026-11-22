@@ -12,15 +12,15 @@ py -m venv venv
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Then start Datalify on port 8504:
+Then start Datalify on port 8501:
 
 ```powershell
 .\run_datalify.bat
 ```
 
-Open <http://localhost:8504>. You can also start it directly with
-`.\venv\Scripts\python.exe -m streamlit run app.py --server.port 8504`.
-The `.streamlit/config.toml` file sets 8504 as Streamlit's default port too.
+Open <http://localhost:8501>. You can also start it directly with
+`.\venv\Scripts\python.exe -m streamlit run app.py --server.port 8501`.
+The `.streamlit/config.toml` file sets 8501 as Streamlit's default port too.
 
 AI Analyst is optional. To enable it, set `OPENROUTER_API_KEY` in the project
 root `.env` file and optionally set `OPENROUTER_MODEL`. Keep `.env` private.
