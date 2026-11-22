@@ -632,19 +632,25 @@ def load_styles() -> None:
             border-color: #2454C6 !important;
         }
         /* Keep the Visualization Studio's Add filter action visibly blue. */
-        body .stApp .st-key-viz_add_filter button {
-            background-color: #356AE6 !important;
+        body .stApp .st-key-viz_add_filter [data-testid="stButton"] button,
+        body .stApp .st-key-viz_add_filter [data-testid="stBaseButton-primary"],
+        body .stApp .st-key-viz_add_filter button[kind="primary"] {
+            background: #356AE6 !important;
             background-image: none !important;
             border-color: #356AE6 !important;
             color: #FFFFFF !important;
         }
-        body .stApp .st-key-viz_add_filter button * {
+        body .stApp .st-key-viz_add_filter [data-testid="stButton"] button *,
+        body .stApp .st-key-viz_add_filter [data-testid="stBaseButton-primary"] *,
+        body .stApp .st-key-viz_add_filter button[kind="primary"] * {
             color: #FFFFFF !important;
             -webkit-text-fill-color: #FFFFFF !important;
             fill: #FFFFFF !important;
         }
-        body .stApp .st-key-viz_add_filter button:hover {
-            background-color: #2454C6 !important;
+        body .stApp .st-key-viz_add_filter [data-testid="stButton"] button:hover,
+        body .stApp .st-key-viz_add_filter [data-testid="stBaseButton-primary"]:hover,
+        body .stApp .st-key-viz_add_filter button[kind="primary"]:hover {
+            background: #2454C6 !important;
             border-color: #2454C6 !important;
         }
         /* Explicit blue tab indicators override Streamlit's red primary color. */
